@@ -1,8 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
-from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,10 +19,10 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # Database
-    POSTGRES_SERVER: str = "database-1.cmdw6osie4vg.us-east-1.rds.amazonaws.com"
+    POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
-    POSTGRES_USER: str = "postgres_mybizai"
-    POSTGRES_PASSWORD: str = "MYqiEQVO7TmEfsNB7faj"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "postgres"
     POSTGRES_DB: str = "capsjobportal"
 
     SQLALCHEMY_ECHO: bool = False
@@ -42,20 +41,20 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = "change-this-secret-key"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     JWT_ALGORITHM: str = "HS256"
 
     # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = ["http://localhost:3000/"]
+    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     # File storage
     MEDIA_ROOT: str = "media"
 
     # Initial superuser (bootstrap admin)
-    FIRST_SUPERUSER_EMAIL: Optional[str] = "ojusoni@gmail.com"
-    FIRST_SUPERUSER_PASSWORD: Optional[str] = "holamigo"
-    FIRST_SUPERUSER_FULL_NAME: Optional[str] = "ojus soni"
+    FIRST_SUPERUSER_EMAIL: Optional[str] = None
+    FIRST_SUPERUSER_PASSWORD: Optional[str] = None
+    FIRST_SUPERUSER_FULL_NAME: Optional[str] = None
 
 
 @lru_cache

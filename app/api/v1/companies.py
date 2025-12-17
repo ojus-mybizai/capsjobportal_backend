@@ -35,11 +35,34 @@ async def _validate_master_active(
     if item_id is None:
         return
     obj = await session.get(model, item_id)
-    if not obj or not getattr(obj, "is_active", False):
+    if not obj:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {field_name}",
+        )
+
+    is_active = getattr(obj, "is_active", None)
+    if is_active is False:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid or inactive {field_name}",
         )
+
+
+async def _get_company_for_read(session: AsyncSession, company_id: UUID) -> Company:
+    result = await session.execute(
+        select(Company)
+        .options(
+            joinedload(Company.category),
+            joinedload(Company.location_area),
+            selectinload(Company.payments),
+        )
+        .where(Company.id == company_id)
+    )
+    company = result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    return company
 
 
 @router.get("/", response_model=APIResponse[PaginatedResponse[CompanyRead]])
@@ -144,8 +167,8 @@ async def create_company(
             status_code=status.HTTP_409_CONFLICT,
             detail="Company creation conflict",
         ) from exc
-    await session.refresh(company)
-    return success_response(CompanyRead.model_validate(company))
+    company_for_read = await _get_company_for_read(session, company.id)
+    return success_response(CompanyRead.model_validate(company_for_read))
 
 
 @router.get("/{company_id}", response_model=APIResponse[CompanyRead])
@@ -213,8 +236,8 @@ async def update_company(
             status_code=status.HTTP_409_CONFLICT,
             detail="Company update conflict",
         ) from exc
-    await session.refresh(company)
-    return success_response(CompanyRead.model_validate(company))
+    company_for_read = await _get_company_for_read(session, company.id)
+    return success_response(CompanyRead.model_validate(company_for_read))
 
 
 @router.delete("/{company_id}", response_model=APIResponse[CompanyRead])
@@ -229,8 +252,8 @@ async def delete_company(
 
     company.is_active = False
     await session.commit()
-    await session.refresh(company)
-    return success_response(CompanyRead.model_validate(company))
+    company_for_read = await _get_company_for_read(session, company.id)
+    return success_response(CompanyRead.model_validate(company_for_read))
 
 
 @router.post("/{company_id}/payments", response_model=APIResponse[CompanyPaymentRead])
@@ -285,5 +308,5 @@ async def upload_company_files(
         company.front_image_url = front_image_file.url
 
     await session.commit()
-    await session.refresh(company)
-    return success_response(CompanyRead.model_validate(company))
+    company_for_read = await _get_company_for_read(session, company.id)
+    return success_response(CompanyRead.model_validate(company_for_read))
