@@ -17,10 +17,93 @@ from app.models.placement_income import PlacementIncome, PlacementIncomePayment
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
 from app.schemas.company import CompanyPaymentCreate, CompanyPaymentRead
-from app.schemas.payment_ledger import PaymentLedgerItem
+from app.schemas.payment_ledger import PaymentLedgerItem, PaymentDueItem
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+@router.get("/pending-dues", response_model=APIResponse[list[PaymentDueItem]])
+async def list_pending_dues(
+    due_before: datetime | None = Query(None, description="Optional cutoff date for due items"),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[list[PaymentDueItem]]:
+    items: list[PaymentDueItem] = []
+
+    # Placement income pending balances
+    pi_filters = [PlacementIncome.is_active.is_(True)]
+    if due_before is not None:
+        pi_filters.append(PlacementIncome.due_date <= due_before)
+    pi_stmt = (
+        select(
+            PlacementIncome.id,
+            PlacementIncome.balance,
+            PlacementIncome.total_receivable,
+            PlacementIncome.total_received,
+            PlacementIncome.candidate_id,
+            Candidate.full_name.label("candidate_name"),
+            Candidate.mobile_number.label("candidate_contact_number"),
+        )
+        .select_from(PlacementIncome)
+        .join(Candidate, Candidate.id == PlacementIncome.candidate_id)
+        .where(*pi_filters)
+        .order_by(PlacementIncome.due_date.asc())
+    )
+    pi_res = await session.execute(pi_stmt)
+    for row in pi_res.all():
+        if int(row.balance or 0) <= 0:
+            continue
+        items.append(
+            PaymentDueItem(
+                source="PLACEMENT_INCOME_PENDING",
+                balance=int(row.balance or 0),
+                total_amount=int(row.total_receivable or 0),
+                candidate_id=row.candidate_id,
+                candidate_name=row.candidate_name,
+                candidate_contact_number=row.candidate_contact_number,
+                total_received=int(row.total_received or 0),
+            )
+        )
+
+    # JOC fee pending balances
+    from app.models.candidate import JocStructureFee  # local import to avoid cycle
+
+    joc_filters = [JocStructureFee.is_active.is_(True)]
+    if due_before is not None:
+        joc_filters.append(JocStructureFee.due_date <= due_before)
+    joc_stmt = (
+        select(
+            JocStructureFee.id,
+            JocStructureFee.balance,
+            JocStructureFee.total_fee,
+            JocStructureFee.candidate_id,
+            Candidate.full_name.label("candidate_name"),
+            Candidate.mobile_number.label("candidate_contact_number"),
+        )
+        .select_from(JocStructureFee)
+        .join(Candidate, Candidate.id == JocStructureFee.candidate_id)
+        .where(*joc_filters)
+        .order_by(JocStructureFee.due_date.asc())
+    )
+    joc_res = await session.execute(joc_stmt)
+    for row in joc_res.all():
+        if int(row.balance or 0) <= 0:
+            continue
+        items.append(
+            PaymentDueItem(
+                source="JOC_FEE_PENDING",
+                balance=int(row.balance or 0),
+                total_amount=int(row.total_fee or 0),
+                candidate_id=row.candidate_id,
+                candidate_name=row.candidate_name,
+                candidate_contact_number=row.candidate_contact_number,
+                total_received=max(int(row.total_fee or 0) - int(row.balance or 0), 0),
+            )
+        )
+
+    # keep order as collected
+    return success_response(items)
 
 
 @router.get("/ledger", response_model=APIResponse[PaginatedResponse[PaymentLedgerItem]])

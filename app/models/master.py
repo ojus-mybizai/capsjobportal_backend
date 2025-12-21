@@ -18,3 +18,23 @@ class MasterCompanyCategory(MasterMixin, Base):
 
 class MasterLocation(MasterMixin, Base):
     __tablename__ = "master_location"
+
+
+class MasterJobCategory(MasterMixin, Base):
+    __tablename__ = "master_job_category"
+
+
+class MasterExperienceLevel(MasterMixin, Base):
+    __tablename__ = "master_experience_level"
+
+
+class MasterSkill(MasterMixin, Base):
+    __tablename__ = "master_skill"
+
+
+class MasterEducation(MasterMixin, Base):
+    __tablename__ = "master_education"
+
+
+class MasterDegree(MasterMixin, Base):
+    __tablename__ = "master_degree"

@@ -26,8 +26,10 @@ class FileService:
         with open(target_path, "wb") as f:
             f.write(content)
 
+        public_url = f"/media/{generated_name}"
+
         db_file = File(
-            url=str(target_path),
+            url=public_url,
             filename=upload.filename or generated_name,
             mimetype=upload.content_type,
             size=len(content),

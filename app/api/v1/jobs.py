@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
@@ -10,7 +11,8 @@ from sqlalchemy.orm import joinedload
 from app.api import deps
 from app.core.response import APIResponse, success_response
 from app.models.interview import Interview
-from app.models.job import Job, JobStatus, JobType, Joined_candidates
+from app.models.job import Job, JobStatus, JobType, Gender, Joined_candidates
+from app.models.master import MasterDegree, MasterEducation, MasterJobCategory, MasterSkill, MasterLocation
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
@@ -20,17 +22,63 @@ from app.services.file_service import FileService
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+async def _fetch_name_map(session: AsyncSession, model, ids: set[UUID]) -> dict[UUID, str]:
+    if not ids:
+        return {}
+    stmt = select(model.id, model.name).where(model.id.in_(ids))
+    res = await session.execute(stmt)
+    return {row[0]: row[1] for row in res.all()}
+
+
+def _as_uuid_list(value: Optional[list | dict]) -> list[UUID]:
+    if not value:
+        return []
+    if isinstance(value, dict):
+        value = list(value.values())
+    result: list[UUID] = []
+    for v in value:
+        try:
+            result.append(UUID(str(v)))
+        except Exception:
+            continue
+    return result
+
+
+async def _hydrate_job_with_names(session: AsyncSession, job: Job) -> JobRead:
+    category_map = await _fetch_name_map(session, MasterJobCategory, set(_as_uuid_list(job.job_categories)))
+    skill_map = await _fetch_name_map(session, MasterSkill, set(_as_uuid_list(job.skills)))
+    education_map = await _fetch_name_map(session, MasterEducation, set(_as_uuid_list(job.education)))
+    degree_map = await _fetch_name_map(session, MasterDegree, set(_as_uuid_list(job.degree)))
+    location_map = await _fetch_name_map(
+        session, MasterLocation, {job.location_area_id} if job.location_area_id else set()
+    )
+    payload = JobRead.model_validate(job)
+    payload.job_category_names = [category_map.get(x) for x in _as_uuid_list(job.job_categories) if category_map.get(x)]
+    payload.skill_names = [skill_map.get(x) for x in _as_uuid_list(job.skills) if skill_map.get(x)]
+    payload.education_names = [education_map.get(x) for x in _as_uuid_list(job.education) if education_map.get(x)]
+    payload.degree_names = [degree_map.get(x) for x in _as_uuid_list(job.degree) if degree_map.get(x)]
+    payload.location_area_name = location_map.get(job.location_area_id) if job.location_area_id else None
+    return payload
+
+
 @router.get("/", response_model=APIResponse[PaginatedResponse[JobRead]])
 async def list_jobs(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     company_id: Optional[UUID] = Query(None),
     status_filter: Optional[JobStatus] = Query(None, alias="status"),
+    job_type: Optional[JobType] = Query(None),
+    gender: Optional[Gender] = Query(None),
     location_area_id: Optional[UUID] = Query(None),
     min_salary: Optional[int] = Query(None, ge=0),
     max_salary: Optional[int] = Query(None, ge=0),
+    vacancies_min: Optional[int] = Query(None, ge=0),
+    vacancies_max: Optional[int] = Query(None, ge=0),
     skills: Optional[List[str]] = Query(None),
     q: Optional[str] = Query(None, description="Search in title and description"),
+    created_from: Optional[datetime] = Query(None),
+    created_to: Optional[datetime] = Query(None),
+    is_active: Optional[bool] = Query(True),
     sort_by: Optional[str] = Query("created_at"),
     order: Optional[str] = Query("desc"),
     session: AsyncSession = Depends(deps.get_db_session),
@@ -39,33 +87,66 @@ async def list_jobs(
     stmt = select(Job).options(
         joinedload(Job.company),
         joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+        joinedload(Job.location_area),
     )
-    filters = [Job.is_active.is_(True)]
+    filters = []
+
+    if is_active is not None:
+        filters.append(Job.is_active.is_(is_active))
 
     if company_id:
         filters.append(Job.company_id == company_id)
     if status_filter:
         filters.append(Job.status == status_filter.value)
+    if job_type is not None:
+        filters.append(Job.job_type == job_type.value)
+    if gender is not None:
+        filters.append(Job.gender == gender.value)
     if location_area_id:
         filters.append(Job.location_area_id == location_area_id)
     if min_salary is not None:
         filters.append(Job.salary_min >= min_salary)
     if max_salary is not None:
         filters.append(Job.salary_max <= max_salary)
+    if vacancies_min is not None:
+        filters.append(Job.num_vacancies >= vacancies_min)
+    if vacancies_max is not None:
+        filters.append(Job.num_vacancies <= vacancies_max)
     if skills:
         filters.append(Job.skills.contains(skills))
     if q:
         like = f"%{q}%"
         filters.append(or_(Job.title.ilike(like), Job.description.ilike(like)))
+    if created_from is not None:
+        filters.append(Job.created_at >= created_from)
+    if created_to is not None:
+        filters.append(Job.created_at <= created_to)
 
     if filters:
         stmt = stmt.where(and_(*filters))
 
-    sort_attr = getattr(Job, sort_by, Job.created_at)
-    if order == "asc":
-        stmt = stmt.order_by(sort_attr.asc())
-    else:
-        stmt = stmt.order_by(sort_attr.desc())
+    allowed_sort_fields = {
+        "created_at": Job.created_at,
+        "updated_at": Job.updated_at,
+        "title": Job.title,
+        "status": Job.status,
+        "salary_min": Job.salary_min,
+        "salary_max": Job.salary_max,
+        "num_vacancies": Job.num_vacancies,
+    }
+    if sort_by not in allowed_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid sort_by. Allowed: {', '.join(sorted(allowed_sort_fields.keys()))}",
+        )
+    sort_attr = allowed_sort_fields[sort_by]
+    normalized_order = (order or "desc").strip().lower()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="order must be either 'asc' or 'desc'",
+        )
+    stmt = stmt.order_by(sort_attr.asc() if normalized_order == "asc" else sort_attr.desc())
 
     stmt = stmt.limit(limit).offset((page - 1) * limit)
 
@@ -75,7 +156,33 @@ async def list_jobs(
 
     result = (await session.execute(stmt)).unique()
     jobs = result.scalars().all()
-    items = [JobRead.model_validate(job) for job in jobs]
+    # collect master ids
+    category_ids: set[UUID] = set()
+    skill_ids: set[UUID] = set()
+    education_ids: set[UUID] = set()
+    degree_ids: set[UUID] = set()
+    for job in jobs:
+        category_ids.update(_as_uuid_list(job.job_categories))
+        skill_ids.update(_as_uuid_list(job.skills))
+        education_ids.update(_as_uuid_list(job.education))
+        degree_ids.update(_as_uuid_list(job.degree))
+
+    category_map = await _fetch_name_map(session, MasterJobCategory, category_ids)
+    skill_map = await _fetch_name_map(session, MasterSkill, skill_ids)
+    education_map = await _fetch_name_map(session, MasterEducation, education_ids)
+    degree_map = await _fetch_name_map(session, MasterDegree, degree_ids)
+    location_ids = {job.location_area_id for job in jobs if job.location_area_id}
+    location_map = await _fetch_name_map(session, MasterLocation, set(location_ids))
+
+    items: list[JobRead] = []
+    for job in jobs:
+        payload = JobRead.model_validate(job)
+        payload.job_category_names = [category_map.get(x) for x in _as_uuid_list(job.job_categories) if category_map.get(x)]
+        payload.skill_names = [skill_map.get(x) for x in _as_uuid_list(job.skills) if skill_map.get(x)]
+        payload.education_names = [education_map.get(x) for x in _as_uuid_list(job.education) if education_map.get(x)]
+        payload.degree_names = [degree_map.get(x) for x in _as_uuid_list(job.degree) if degree_map.get(x)]
+        payload.location_area_name = location_map.get(job.location_area_id) if job.location_area_id else None
+        items.append(payload)
 
     total_result = await session.execute(total_stmt)
     total = int(total_result.scalar_one() or 0)
@@ -132,12 +239,14 @@ async def create_job(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job.id)
     )
     result = (await session.execute(stmt)).unique()
     job_with_rels = result.scalar_one()
-    return success_response(JobRead.model_validate(job_with_rels))
+    hydrated = await _hydrate_job_with_names(session, job_with_rels)
+    return success_response(hydrated)
 
 
 @router.get("/{job_id}", response_model=APIResponse[JobRead])
@@ -151,6 +260,7 @@ async def get_job(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
@@ -159,6 +269,12 @@ async def get_job(
     if job is None or not job.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
+    category_map = await _fetch_name_map(session, MasterJobCategory, set(_as_uuid_list(job.job_categories)))
+    skill_map = await _fetch_name_map(session, MasterSkill, set(_as_uuid_list(job.skills)))
+    education_map = await _fetch_name_map(session, MasterEducation, set(_as_uuid_list(job.education)))
+    degree_map = await _fetch_name_map(session, MasterDegree, set(_as_uuid_list(job.degree)))
+    location_map = await _fetch_name_map(session, MasterLocation, {job.location_area_id} if job.location_area_id else set())
+
     count_stmt = select(func.count()).select_from(Interview).where(
         and_(Interview.is_active.is_(True), Interview.job_id == job_id)
     )
@@ -166,6 +282,11 @@ async def get_job(
     interviews_count = int(count_res.scalar_one() or 0)
 
     payload = JobRead.model_validate(job)
+    payload.job_category_names = [category_map.get(x) for x in _as_uuid_list(job.job_categories) if category_map.get(x)]
+    payload.skill_names = [skill_map.get(x) for x in _as_uuid_list(job.skills) if skill_map.get(x)]
+    payload.education_names = [education_map.get(x) for x in _as_uuid_list(job.education) if education_map.get(x)]
+    payload.degree_names = [degree_map.get(x) for x in _as_uuid_list(job.degree) if degree_map.get(x)]
+    payload.location_area_name = location_map.get(job.location_area_id) if job.location_area_id else None
     payload.interviews_count = interviews_count
     return success_response(payload)
 
@@ -182,6 +303,7 @@ async def update_job(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
@@ -212,12 +334,14 @@ async def update_job(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
     result = (await session.execute(stmt)).unique()
     job_with_rels = result.scalar_one()
-    return success_response(JobRead.model_validate(job_with_rels))
+    hydrated = await _hydrate_job_with_names(session, job_with_rels)
+    return success_response(hydrated)
 
 
 @router.patch("/{job_id}/status", response_model=APIResponse[JobRead])
@@ -232,6 +356,7 @@ async def update_job_status(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
@@ -247,12 +372,14 @@ async def update_job_status(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
     result = (await session.execute(stmt)).unique()
     job_with_rels = result.scalar_one()
-    return success_response(JobRead.model_validate(job_with_rels))
+    hydrated = await _hydrate_job_with_names(session, job_with_rels)
+    return success_response(hydrated)
 
 
 @router.post("/{job_id}/attachments", response_model=APIResponse[JobRead])
@@ -267,6 +394,7 @@ async def upload_job_attachments(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
@@ -290,9 +418,11 @@ async def upload_job_attachments(
         .options(
             joinedload(Job.company),
             joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
         )
         .where(Job.id == job_id)
     )
     result = (await session.execute(stmt)).unique()
     job_with_rels = result.scalar_one()
-    return success_response(JobRead.model_validate(job_with_rels))
+    hydrated = await _hydrate_job_with_names(session, job_with_rels)
+    return success_response(hydrated)

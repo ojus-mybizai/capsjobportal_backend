@@ -1,5 +1,6 @@
 from typing import List, Optional
 from uuid import UUID
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
 from sqlalchemy import and_, func, or_, select
@@ -14,11 +15,13 @@ from app.models.candidate import (
     CandidateEmploymentStatus,
     CandidatePayment,
     CandidateStatus,
+    ExperienceLevel,
     JocStructureFee,
 )
 from app.models.interview import Interview
 from app.models.user import User
-from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate
+from app.models.master import MasterSkill, MasterEducation, MasterDegree
+from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate, CandidateStatusChange
 from app.schemas.common import PaginatedResponse
 from app.services.file_service import FileService
 
@@ -26,19 +29,74 @@ from app.services.file_service import FileService
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
+async def _master_names_by_ids(
+    session: AsyncSession,
+    model,
+    ids: Optional[list[str] | list],
+) -> list[str]:
+    if not ids:
+        return []
+    try:
+        id_list = list({UUID(str(i)) for i in ids})
+    except Exception:
+        return []
+    stmt = select(model.name).where(model.id.in_(id_list))
+    res = await session.execute(stmt)
+    return [r[0] for r in res.all() if r[0] is not None]
+
+
+async def _validate_master_ids(session: AsyncSession, model, ids: Optional[list[str] | list]) -> None:
+    if not ids:
+        return
+    # Normalize to list of unique IDs
+    try:
+        id_list = list({UUID(str(i)) for i in ids})
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid ID format in list")
+
+    stmt = select(func.count()).select_from(model).where(model.id.in_(id_list))
+    res = await session.execute(stmt)
+    found = int(res.scalar_one() or 0)
+    if found != len(id_list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"One or more {model.__tablename__} ids are invalid",
+        )
+
+
+async def _hydrate_candidate_with_names(session: AsyncSession, candidate: Candidate) -> CandidateRead:
+    skills_names = await _master_names_by_ids(session, MasterSkill, candidate.skills)
+    education_names = await _master_names_by_ids(session, MasterEducation, candidate.education)
+    degree_names = await _master_names_by_ids(session, MasterDegree, candidate.degree)
+    payload = CandidateRead.model_validate(candidate)
+    payload.skills_names = skills_names
+    payload.education_names = education_names
+    payload.degree_names = degree_names
+    return payload
+
+
 @router.get("/", response_model=APIResponse[PaginatedResponse[CandidateRead]])
 async def list_candidates(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     q: Optional[str] = Query(None, description="Search in name, email, mobile"),
+    email: Optional[str] = Query(None),
+    mobile_number: Optional[str] = Query(None),
+    status_filter: Optional[CandidateStatus] = Query(None, alias="status"),
+    employment_status: Optional[CandidateEmploymentStatus] = Query(None),
     qualification: Optional[str] = Query(None),
     location_area_id: Optional[UUID] = Query(None),
     expected_salary_min: Optional[int] = Query(None, ge=0),
     expected_salary_max: Optional[int] = Query(None, ge=0),
-    experience_min: Optional[float] = Query(None, ge=0),
-    experience_max: Optional[float] = Query(None, ge=0),
+    experience_level: Optional["ExperienceLevel"] = Query(None),
     skills: Optional[List[str]] = Query(None),
+    has_resume: Optional[bool] = Query(None),
+    has_photo: Optional[bool] = Query(None),
+    created_from: Optional[datetime] = Query(None),
+    created_to: Optional[datetime] = Query(None),
     is_active: Optional[bool] = Query(True),
+    sort_by: str = Query("created_at"),
+    order: str = Query("desc"),
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
 ) -> APIResponse[PaginatedResponse[CandidateRead]]:
@@ -51,6 +109,10 @@ async def list_candidates(
 
     if is_active is not None:
         filters.append(Candidate.is_active.is_(is_active))
+    if status_filter is not None:
+        filters.append(Candidate.status == status_filter.value)
+    if employment_status is not None:
+        filters.append(Candidate.employment_status == employment_status.value)
     if qualification:
         filters.append(Candidate.qualification.ilike(f"%{qualification}%"))
     if location_area_id:
@@ -59,12 +121,22 @@ async def list_candidates(
         filters.append(Candidate.expected_salary >= expected_salary_min)
     if expected_salary_max is not None:
         filters.append(Candidate.expected_salary <= expected_salary_max)
-    if experience_min is not None:
-        filters.append(Candidate.experience_years >= experience_min)
-    if experience_max is not None:
-        filters.append(Candidate.experience_years <= experience_max)
+    if experience_level is not None:
+        filters.append(Candidate.experience_level == experience_level.value)
     if skills:
         filters.append(Candidate.skills.contains(skills))
+    if has_resume is True:
+        filters.append(Candidate.resume_url.is_not(None))
+    if has_resume is False:
+        filters.append(Candidate.resume_url.is_(None))
+    if has_photo is True:
+        filters.append(Candidate.photo_url.is_not(None))
+    if has_photo is False:
+        filters.append(Candidate.photo_url.is_(None))
+    if created_from is not None:
+        filters.append(Candidate.created_at >= created_from)
+    if created_to is not None:
+        filters.append(Candidate.created_at <= created_to)
     if q:
         like = f"%{q}%"
         filters.append(
@@ -74,11 +146,37 @@ async def list_candidates(
                 Candidate.mobile_number.ilike(like),
             )
         )
+    if email:
+        filters.append(Candidate.email.ilike(email.strip()))
+    if mobile_number:
+        filters.append(Candidate.mobile_number.ilike(mobile_number.strip()))
 
     if filters:
         stmt = stmt.where(and_(*filters))
 
-    stmt = stmt.order_by(Candidate.created_at.desc()).limit(limit).offset((page - 1) * limit)
+    allowed_sort_fields = {
+        "created_at": Candidate.created_at,
+        "updated_at": Candidate.updated_at,
+        "full_name": Candidate.full_name,
+        "expected_salary": Candidate.expected_salary,
+        "experience_level": Candidate.experience_level,
+        "status": Candidate.status,
+        "employment_status": Candidate.employment_status,
+    }
+    if sort_by not in allowed_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid sort_by. Allowed: {', '.join(sorted(allowed_sort_fields.keys()))}",
+        )
+    normalized_order = (order or "desc").strip().lower()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="order must be either 'asc' or 'desc'",
+        )
+    sort_attr = allowed_sort_fields[sort_by]
+    stmt = stmt.order_by(sort_attr.asc() if normalized_order == "asc" else sort_attr.desc())
+    stmt = stmt.limit(limit).offset((page - 1) * limit)
 
     total_stmt = select(func.count()).select_from(Candidate)
     if filters:
@@ -101,7 +199,7 @@ async def list_candidates(
     for obj in candidates:
         if getattr(obj, "employment_status", None) is None:
             obj.employment_status = CandidateEmploymentStatus.UNEMPLOYED.value
-        payload = CandidateRead.model_validate(obj)
+        payload = await _hydrate_candidate_with_names(session, obj)
         payload.interviews_count = counts_by_candidate.get(obj.id, 0)
         items.append(payload)
 
@@ -131,6 +229,12 @@ async def create_candidate(
     if body.status in {CandidateStatus.REGISTERED, CandidateStatus.JOC} and pay_payload is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="initial_payment is required")
 
+    # Compute age if dob provided
+    dob_value = payload.get("dob")
+    if isinstance(dob_value, date):
+        today = date.today()
+        payload["age"] = int((today - dob_value).days // 365)
+
     candidate = Candidate(**payload, is_active=True)
     session.add(candidate)
 
@@ -146,6 +250,7 @@ async def create_candidate(
                 due_date=fee_payload.due_date,
                 is_active=True,
             )
+            print(fee_row)
             session.add(fee_row)
 
         if pay_payload is not None:
@@ -157,6 +262,8 @@ async def create_candidate(
                 is_active=True,
             )
             session.add(payment)
+            if fee_payload is not None:
+                fee_row.balance = max(fee_row.balance - int(pay_payload.amount), 0)
 
         await session.commit()
     except IntegrityError as exc:
@@ -168,12 +275,17 @@ async def create_candidate(
 
     stmt = (
         select(Candidate)
-        .options(selectinload(Candidate.fee_structure), selectinload(Candidate.payments))
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
         .where(Candidate.id == candidate.id)
     )
     res = await session.execute(stmt)
     candidate_with_rels = res.scalar_one()
-    return success_response(CandidateRead.model_validate(candidate_with_rels))
+    hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
+    return success_response(hydrated)
 
 
 @router.get("/{candidate_id}", response_model=APIResponse[CandidateRead])
@@ -204,7 +316,7 @@ async def get_candidate(
 
     if getattr(candidate, "employment_status", None) is None:
         candidate.employment_status = CandidateEmploymentStatus.UNEMPLOYED.value
-    payload = CandidateRead.model_validate(candidate)
+    payload = await _hydrate_candidate_with_names(session, candidate)
     payload.interviews_count = interviews_count
     return success_response(payload)
 
@@ -218,7 +330,11 @@ async def update_candidate(
 ) -> APIResponse[CandidateRead]:
     stmt = (
         select(Candidate)
-        .options(selectinload(Candidate.fee_structure), selectinload(Candidate.payments))
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
         .where(Candidate.id == candidate_id)
     )
     res = await session.execute(stmt)
@@ -230,6 +346,14 @@ async def update_candidate(
     incoming_status = update_data.get("status")
     if isinstance(incoming_status, CandidateStatus):
         update_data["status"] = incoming_status.value
+
+    dob_value = update_data.get("dob")
+    if isinstance(dob_value, date):
+        today = date.today()
+        update_data["age"] = int((today - dob_value).days // 365)
+    elif "age" in update_data and update_data.get("age") is not None:
+        # if dob not provided but age explicitly provided, keep it
+        pass
 
     for field, value in update_data.items():
         setattr(candidate, field, value)
@@ -260,7 +384,9 @@ async def update_candidate(
             session.add(payment)
 
     if effective_status == CandidateStatus.JOC:
+        print("here")
         if body.fee_structure is not None:
+            print(body.fee_structure)
             if candidate.fee_structure is None:
                 fee_row = JocStructureFee(
                     candidate_id=candidate.id,
@@ -273,6 +399,7 @@ async def update_candidate(
             else:
                 candidate.fee_structure.total_fee = int(body.fee_structure.total_fee)
                 candidate.fee_structure.due_date = body.fee_structure.due_date
+                candidate.fee_structure.balance = int(body.fee_structure.total_fee - body.initial_payment.amount)
         if body.initial_payment is not None:
             payment = CandidatePayment(
                 candidate_id=candidate.id,
@@ -293,7 +420,111 @@ async def update_candidate(
         ) from exc
 
     await session.refresh(candidate)
-    return success_response(CandidateRead.model_validate(candidate))
+    hydrated = await _hydrate_candidate_with_names(session, candidate)
+    return success_response(hydrated)
+
+
+@router.put("/{candidate_id}/status", response_model=APIResponse[CandidateRead])
+async def change_candidate_status(
+    candidate_id: UUID,
+    body: CandidateStatusChange,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[CandidateRead]:
+    stmt = (
+        select(Candidate)
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
+        .where(Candidate.id == candidate_id)
+    )
+    res = await session.execute(stmt)
+    candidate = res.scalar_one_or_none()
+    if candidate is None or not candidate.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    current_status = CandidateStatus(candidate.status)
+    target_status = CandidateStatus(body.status)
+
+    # Allowed forward transitions only
+    allowed = {
+        CandidateStatus.FREE: {CandidateStatus.REGISTERED, CandidateStatus.JOC},
+        CandidateStatus.REGISTERED: {CandidateStatus.JOC, CandidateStatus.CAPS},
+        CandidateStatus.JOC: {CandidateStatus.CAPS},
+        CandidateStatus.CAPS: set(),
+    }
+    if target_status not in allowed.get(current_status, set()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot change status from {current_status.value} to {target_status.value}",
+        )
+
+    # Handle payload requirements per target status
+    if target_status == CandidateStatus.JOC:
+        if body.fee_structure is None or body.initial_payment is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fee_structure and initial_payment are required when moving to JOC",
+            )
+
+    if target_status in {CandidateStatus.CAPS, CandidateStatus.FREE}:
+        if body.fee_structure is not None or body.initial_payment is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fee_structure and initial_payment are not allowed for CAPS/FREE",
+            )
+
+    # Apply status change
+    candidate.status = target_status.value
+
+    # JOC handling
+    if target_status == CandidateStatus.JOC:
+        fs = body.fee_structure
+        fee_obj = candidate.fee_structure
+        # create or update fee_structure
+        if candidate.fee_structure is None:
+            fee_row = JocStructureFee(
+                candidate_id=candidate.id,
+                total_fee=int(fs.total_fee),
+                balance=int(fs.total_fee),
+                due_date=fs.due_date,
+                is_active=True,
+            )
+            session.add(fee_row)
+            fee_obj = fee_row
+        else:
+            candidate.fee_structure.total_fee = int(fs.total_fee)
+            candidate.fee_structure.due_date = fs.due_date
+            candidate.fee_structure.balance = int(fs.total_fee)
+            fee_obj = candidate.fee_structure
+
+        if body.initial_payment is not None:
+            payment = CandidatePayment(
+                candidate_id=candidate.id,
+                amount=body.initial_payment.amount,
+                payment_date=body.initial_payment.payment_date,
+                remarks=body.initial_payment.remarks,
+                is_active=True,
+            )
+            session.add(payment)
+            # reduce balance if fee_structure exists now
+            if fee_obj is not None:
+                fee_obj.balance = max(fee_obj.balance - int(body.initial_payment.amount), 0)
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Candidate status change conflict",
+        ) from exc
+
+    await session.refresh(candidate)
+    hydrated = await _hydrate_candidate_with_names(session, candidate)
+    return success_response(hydrated)
 
 
 @router.delete("/{candidate_id}", response_model=APIResponse[CandidateRead])
@@ -315,7 +546,8 @@ async def delete_candidate(
     )
     res = await session.execute(stmt)
     candidate_with_rels = res.scalar_one()
-    return success_response(CandidateRead.model_validate(candidate_with_rels))
+    hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
+    return success_response(hydrated)
 
 
 @router.post("/{candidate_id}/upload", response_model=APIResponse[CandidateRead])
@@ -341,5 +573,16 @@ async def upload_candidate_files(
         candidate.photo_url = photo_file.url
 
     await session.commit()
-    await session.refresh(candidate)
-    return success_response(CandidateRead.model_validate(candidate))
+    stmt = (
+        select(Candidate)
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
+        .where(Candidate.id == candidate_id)
+    )
+    res = await session.execute(stmt)
+    candidate_with_rels = res.scalar_one()
+    hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
+    return success_response(hydrated)

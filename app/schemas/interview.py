@@ -42,6 +42,9 @@ class InterviewStatusUpdate(BaseModel):
 class InterviewRead(InterviewBase):
     id: UUID
     placement_income_id: Optional[UUID] = None
+    company_name: Optional[str] = None
+    job_title: Optional[str] = None
+    candidate_name: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

@@ -4,24 +4,26 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field
 
-from app.models.job import JobStatus, JobType
+from app.models.job import JobStatus, JobType, Gender, ExperienceLevel
 
 
 class JobBase(BaseModel):
     company_id: UUID
     title: str
-    qualification: Optional[str] = None
-    experience: Optional[str] = None
     salary_min: Optional[int] = Field(default=None, ge=0)
     salary_max: Optional[int] = Field(default=None, ge=0)
     num_vacancies: int = Field(default=1, ge=1)
     job_type: JobType = JobType.FULL_TIME
     description: Optional[str] = None
     responsibilities: Optional[str] = None
-    skills: Optional[list[str] | dict] = None
-    education: Optional[List[str]] = None
+    skills: Optional[list[str] | dict] = None  # list of MasterSkill ids
+    education: Optional[List[str]] = None  # list of MasterEducation ids
+    degree: Optional[List[str]] = None  # list of MasterDegree ids
+    job_categories: Optional[list[str] | dict] = None  # list of MasterJobCategory ids
     location_area_id: Optional[UUID] = None
     contact_person: Optional[str] = None
+    gender: Optional[Gender] = None
+    experience_level: Optional[ExperienceLevel] = None
 
     # @field_validator("salary_max")
     # @classmethod
@@ -37,9 +39,8 @@ class JobCreate(JobBase):
 
 
 class JobUpdate(BaseModel):
+    company_id: Optional[UUID] = None
     title: Optional[str] = None
-    qualification: Optional[str] = None
-    experience: Optional[str] = None
     salary_min: Optional[int] = Field(default=None, ge=0)
     salary_max: Optional[int] = Field(default=None, ge=0)
     num_vacancies: Optional[int] = Field(default=None, ge=0)
@@ -48,10 +49,14 @@ class JobUpdate(BaseModel):
     responsibilities: Optional[str] = None
     skills: Optional[list[str] | dict] = None
     education: Optional[List[str]] = None
+    degree: Optional[List[str]] = None
+    job_categories: Optional[list[str] | dict] = None
     location_area_id: Optional[UUID] = None
     contact_person: Optional[str] = None
     status: Optional[JobStatus] = None
     is_active: Optional[bool] = None
+    gender: Optional[Gender] = None
+    experience_level: Optional[ExperienceLevel] = None
 
     # @field_validator("salary_max")
     # @classmethod
@@ -92,6 +97,13 @@ class JobRead(JobBase):
     interviews_count: Optional[int] = None
     num_vacancies: int = Field(ge=0)
     is_active: bool
+    gender: Optional[Gender] = None
+    job_category_names: Optional[List[str]] = None
+    skill_names: Optional[List[str]] = None
+    education_names: Optional[List[str]] = None
+    degree_names: Optional[List[str]] = None
+    location_area_name: Optional[str] = None
+    experience_level: Optional[ExperienceLevel] = None
     created_at: datetime
     updated_at: datetime
 

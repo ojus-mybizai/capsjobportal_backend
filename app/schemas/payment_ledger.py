@@ -26,3 +26,13 @@ class PaymentLedgerItem(BaseModel):
     interview_id: UUID | None = None
 
     remarks: str | None = None
+
+
+class PaymentDueItem(BaseModel):
+    source: str  # PLACEMENT_INCOME_PENDING or JOC_FEE_PENDING
+    candidate_id: UUID
+    candidate_name: str | None = None
+    candidate_contact_number: str | None = None
+    total_amount: int
+    balance: int
+    total_received: int

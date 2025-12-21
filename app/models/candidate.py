@@ -1,11 +1,12 @@
 import uuid
 
 import enum
-from datetime import datetime
+from datetime import datetime, date
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -34,6 +35,21 @@ class CandidateEmploymentStatus(str, enum.Enum):
     UNEMPLOYED = "UNEMPLOYED"
 
 
+class Gender(str, enum.Enum):
+    MALE = "MALE"
+    FEMALE = "FEMALE"
+    OTHER = "OTHER"
+    BOTH = "BOTH"
+
+
+class ExperienceLevel(str, enum.Enum):
+    FRESHER = "FRESHER"
+    ZERO_ONE = "0_1_YEARS"
+    ONE_THREE = "1_3_YEARS"
+    THREE_FIVE = "3_5_YEARS"
+    FIVE_PLUS = "5_PLUS_YEARS"
+
+
 class Candidate(TimestampMixin, Base):
     __tablename__ = "candidates"
     __table_args__ = (
@@ -47,11 +63,13 @@ class Candidate(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mobile_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     qualification: Mapped[str | None] = mapped_column(Text, nullable=True)
-    experience_years: Mapped[float | None] = mapped_column(Float, nullable=True)
-    skills: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    experience_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
     resume_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     expected_salary: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dob: Mapped[date | None] = mapped_column(Date, nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
     location_area_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("master_location.id"), nullable=True
     )
@@ -60,6 +78,9 @@ class Candidate(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=CandidateStatus.REGISTERED.value, index=True
     )
+    skills: Mapped[list | dict | None] = mapped_column(JSON, nullable=True)
+    education: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    degree: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     employment_status: Mapped[str] = mapped_column(
         String(20),
@@ -69,7 +90,6 @@ class Candidate(TimestampMixin, Base):
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
     fee_structure: Mapped["JocStructureFee"] = relationship(
         "JocStructureFee",
         back_populates="candidate",

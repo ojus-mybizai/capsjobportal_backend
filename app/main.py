@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -39,9 +40,17 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(origin).rstrip("/") for origin in settings.BACKEND_CORS_ORIGINS],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Static files (serve uploaded media)
+app.mount(
+    "/media",
+    StaticFiles(directory=settings.MEDIA_ROOT, check_dir=True),
+    name="media",
 )
 
 

@@ -82,5 +82,6 @@ class CompanyPayment(TimestampMixin, Base):
     payment_date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     company: Mapped["Company"] = relationship("Company", back_populates="payments")

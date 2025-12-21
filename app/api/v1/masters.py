@@ -14,6 +14,11 @@ from app.core.response import APIResponse, error_response, success_response
 from app.models.master import (
     MasterCompanyCategory,
     MasterLocation,
+    MasterJobCategory,
+    MasterExperienceLevel,
+    MasterSkill,
+    MasterEducation,
+    MasterDegree,
 )
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
@@ -26,6 +31,11 @@ router = APIRouter(prefix="/masters", tags=["masters"])
 MASTER_MODEL_MAP: Dict[str, Type] = {
     "company_category": MasterCompanyCategory,
     "location": MasterLocation,
+    "job_category": MasterJobCategory,
+    "experience_level": MasterExperienceLevel,
+    "skill": MasterSkill,
+    "education": MasterEducation,
+    "degree": MasterDegree,
 }
 
 

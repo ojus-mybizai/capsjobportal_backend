@@ -3,8 +3,9 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
@@ -24,6 +25,14 @@ from app.schemas.interview import (
 
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
+
+
+def _hydrate_interview(interview: Interview) -> InterviewRead:
+    payload = InterviewRead.model_validate(interview)
+    payload.company_name = getattr(getattr(interview, "company", None), "name", None)
+    payload.job_title = getattr(getattr(interview, "job", None), "title", None)
+    payload.candidate_name = getattr(getattr(interview, "candidate", None), "full_name", None)
+    return payload
 
 
 @router.post("/", response_model=APIResponse[InterviewRead])
@@ -48,8 +57,19 @@ async def create_interview(
     session.add(interview)
     await session.commit()
     await session.refresh(interview)
-
-    return success_response(InterviewRead.model_validate(interview))
+    # reload with joins for names
+    stmt = (
+        select(Interview)
+        .where(Interview.id == interview.id)
+        .options(
+            joinedload(Interview.company),
+            joinedload(Interview.job),
+            joinedload(Interview.candidate),
+        )
+    )
+    res = await session.execute(stmt)
+    hydrated_obj = res.scalar_one()
+    return success_response(_hydrate_interview(hydrated_obj))
 
 
 @router.get("/", response_model=APIResponse[PaginatedResponse[InterviewRead]])
@@ -62,10 +82,19 @@ async def list_interviews(
     job_id: Optional[UUID] = Query(None),
     candidate_id: Optional[UUID] = Query(None),
     company_id: Optional[UUID] = Query(None),
+    q: Optional[str] = Query(None, description="Search in remarks"),
+    created_from: Optional[datetime] = Query(None),
+    created_to: Optional[datetime] = Query(None),
+    is_active: Optional[bool] = Query(True),
+    sort_by: str = Query("created_at"),
+    order: str = Query("desc"),
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
 ) -> APIResponse[PaginatedResponse[InterviewRead]]:
-    filters = [Interview.is_active.is_(True)]
+    filters = []
+
+    if is_active is not None:
+        filters.append(Interview.is_active.is_(is_active))
 
     if status_filter is not None:
         filters.append(Interview.status == status_filter.value)
@@ -79,14 +108,47 @@ async def list_interviews(
         filters.append(Interview.candidate_id == candidate_id)
     if company_id is not None:
         filters.append(Interview.company_id == company_id)
+    if q:
+        like = f"%{q}%"
+        filters.append(or_(Interview.remarks.ilike(like)))
+    if created_from is not None:
+        filters.append(Interview.created_at >= created_from)
+    if created_to is not None:
+        filters.append(Interview.created_at <= created_to)
 
-    stmt = select(Interview).where(and_(*filters)).order_by(Interview.created_at.desc())
+    allowed_sort_fields = {
+        "created_at": Interview.created_at,
+        "updated_at": Interview.updated_at,
+        "interview_date": Interview.interview_date,
+        "status": Interview.status,
+    }
+    if sort_by not in allowed_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid sort_by. Allowed: {', '.join(sorted(allowed_sort_fields.keys()))}",
+        )
+    normalized_order = (order or "desc").strip().lower()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="order must be either 'asc' or 'desc'",
+        )
+    sort_attr = allowed_sort_fields[sort_by]
+
+    stmt = select(Interview).where(and_(*filters)).order_by(
+        sort_attr.asc() if normalized_order == "asc" else sort_attr.desc()
+    )
     stmt = stmt.limit(limit).offset((page - 1) * limit)
 
     total_stmt = select(func.count()).select_from(Interview).where(and_(*filters))
 
+    stmt = stmt.options(
+        joinedload(Interview.company),
+        joinedload(Interview.job),
+        joinedload(Interview.candidate),
+    )
     result = await session.execute(stmt)
-    items = [InterviewRead.model_validate(x) for x in result.scalars().all()]
+    items = [_hydrate_interview(x) for x in result.scalars().all()]
 
     total_res = await session.execute(total_stmt)
     total = int(total_res.scalar_one() or 0)
@@ -100,10 +162,20 @@ async def get_interview(
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
 ) -> APIResponse[InterviewRead]:
-    interview = await session.get(Interview, interview_id)
+    stmt = (
+        select(Interview)
+        .where(Interview.id == interview_id)
+        .options(
+            joinedload(Interview.company),
+            joinedload(Interview.job),
+            joinedload(Interview.candidate),
+        )
+    )
+    res = await session.execute(stmt)
+    interview = res.scalar_one_or_none()
     if not interview or not interview.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
-    return success_response(InterviewRead.model_validate(interview))
+    return success_response(_hydrate_interview(interview))
 
 
 @router.put("/{interview_id}", response_model=APIResponse[InterviewRead])
@@ -113,7 +185,17 @@ async def update_interview(
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
 ) -> APIResponse[InterviewRead]:
-    interview = await session.get(Interview, interview_id)
+    stmt = (
+        select(Interview)
+        .where(Interview.id == interview_id)
+        .options(
+            joinedload(Interview.company),
+            joinedload(Interview.job),
+            joinedload(Interview.candidate),
+        )
+    )
+    res = await session.execute(stmt)
+    interview = res.scalar_one_or_none()
     if not interview or not interview.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
@@ -126,7 +208,7 @@ async def update_interview(
     await session.commit()
     await session.refresh(interview)
 
-    return success_response(InterviewRead.model_validate(interview))
+    return success_response(_hydrate_interview(interview))
 
 
 @router.patch("/{interview_id}/status", response_model=APIResponse[InterviewRead])
@@ -136,7 +218,17 @@ async def update_interview_status(
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
 ) -> APIResponse[InterviewRead]:
-    interview = await session.get(Interview, interview_id)
+    stmt = (
+        select(Interview)
+        .where(Interview.id == interview_id)
+        .options(
+            joinedload(Interview.company),
+            joinedload(Interview.job),
+            joinedload(Interview.candidate),
+        )
+    )
+    res = await session.execute(stmt)
+    interview = res.scalar_one_or_none()
     if not interview or not interview.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
@@ -242,7 +334,7 @@ async def update_interview_status(
     await session.commit()
     await session.refresh(interview)
 
-    payload = InterviewRead.model_validate(interview)
+    payload = _hydrate_interview(interview)
     payload.placement_income_id = placement_income_id
     return success_response(payload)
 
@@ -253,11 +345,21 @@ async def delete_interview(
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
 ) -> APIResponse[InterviewRead]:
-    interview = await session.get(Interview, interview_id)
+    stmt = (
+        select(Interview)
+        .where(Interview.id == interview_id)
+        .options(
+            joinedload(Interview.company),
+            joinedload(Interview.job),
+            joinedload(Interview.candidate),
+        )
+    )
+    res = await session.execute(stmt)
+    interview = res.scalar_one_or_none()
     if not interview or not interview.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interview not found")
 
     interview.is_active = False
     await session.commit()
     await session.refresh(interview)
-    return success_response(InterviewRead.model_validate(interview))
+    return success_response(_hydrate_interview(interview))

@@ -8,6 +8,7 @@ from pydantic import AnyUrl, BaseModel, EmailStr, Field, constr, field_validator
 class CompanyPaymentBase(BaseModel):
     amount: int = Field(..., gt=0)
     payment_date: datetime
+    remarks: Optional[str] = None
 
 
 class CompanyPaymentCreate(CompanyPaymentBase):

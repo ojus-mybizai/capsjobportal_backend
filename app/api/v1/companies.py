@@ -1,4 +1,5 @@
 from typing import Optional
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
@@ -72,10 +73,17 @@ async def list_companies(
     q: Optional[str] = Query(None, description="Search in name and contact_person"),
     category_id: Optional[UUID] = Query(None),
     location_area_id: Optional[UUID] = Query(None),
+    created_by: Optional[UUID] = Query(None),
+    email: Optional[str] = Query(None),
+    contact_number: Optional[str] = Query(None),
     verification_status: Optional[bool] = Query(None),
     is_verified: Optional[bool] = Query(None, alias="is_verified"),
     company_status: Optional[str] = Query(None),
+    created_from: Optional[datetime] = Query(None),
+    created_to: Optional[datetime] = Query(None),
     is_active: Optional[bool] = Query(True),
+    sort_by: str = Query("created_at"),
+    order: str = Query("desc"),
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
 ) -> APIResponse[PaginatedResponse[CompanyRead]]:
@@ -105,14 +113,44 @@ async def list_companies(
         filters.append(Company.category_id == category_id)
     if location_area_id:
         filters.append(Company.location_area_id == location_area_id)
+    if created_by is not None:
+        filters.append(Company.created_by == created_by)
+    if email:
+        filters.append(Company.email.ilike(email.strip()))
+    if contact_number:
+        filters.append(Company.contact_number.ilike(contact_number.strip()))
     if q:
         like = f"%{q}%"
         filters.append(or_(Company.name.ilike(like), Company.contact_person.ilike(like)))
+    if created_from is not None:
+        filters.append(Company.created_at >= created_from)
+    if created_to is not None:
+        filters.append(Company.created_at <= created_to)
 
     if filters:
         stmt = stmt.where(and_(*filters))
 
-    stmt = stmt.order_by(Company.created_at.desc()).limit(limit).offset((page - 1) * limit)
+    allowed_sort_fields = {
+        "created_at": Company.created_at,
+        "updated_at": Company.updated_at,
+        "name": Company.name,
+        "company_status": Company.company_status,
+        "verification_status": Company.verification_status,
+    }
+    if sort_by not in allowed_sort_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid sort_by. Allowed: {', '.join(sorted(allowed_sort_fields.keys()))}",
+        )
+    normalized_order = (order or "desc").strip().lower()
+    if normalized_order not in {"asc", "desc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="order must be either 'asc' or 'desc'",
+        )
+    sort_attr = allowed_sort_fields[sort_by]
+    stmt = stmt.order_by(sort_attr.asc() if normalized_order == "asc" else sort_attr.desc())
+    stmt = stmt.limit(limit).offset((page - 1) * limit)
 
     total_stmt = select(func.count()).select_from(Company)
     if filters:

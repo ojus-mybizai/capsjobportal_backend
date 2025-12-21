@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator, model_validator
 
-from app.models.candidate import CandidateEmploymentStatus, CandidateStatus
+from app.models.candidate import CandidateEmploymentStatus, CandidateStatus, Gender, ExperienceLevel
 from app.schemas.candidate_payment import CandidatePaymentCreate, CandidatePaymentRead
 
 
@@ -13,13 +13,17 @@ class CandidateBase(BaseModel):
     email: Optional[EmailStr] = None
     mobile_number: Optional[str] = None
     qualification: Optional[str] = None
-    experience_years: Optional[float] = Field(default=None, ge=0)
-    skills: Optional[list[str] | dict] = None
+    experience_level: Optional[ExperienceLevel] = None
+    skills: Optional[list[str] | dict] = None  # list of MasterSkill ids
     expected_salary: Optional[int] = Field(default=None, ge=0)
     location_area_id: Optional[UUID] = None
     job_preferences: Optional[dict | list] = None
     notes: Optional[str] = None
     status: CandidateStatus = CandidateStatus.REGISTERED
+    education: Optional[List[str]] = None  # list of MasterEducation ids
+    degree: Optional[List[str]] = None  # list of MasterDegree ids
+    gender: Optional[Gender] = None
+    dob: Optional[date] = None
 
     @field_validator("mobile_number")
     @classmethod
@@ -55,6 +59,13 @@ class CandidateUpdate(CandidateBase):
     is_active: Optional[bool] = None
     fee_structure: Optional["JocStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
+    age: Optional[int] = None  # ignored if dob provided
+
+
+class CandidateStatusChange(BaseModel):
+    status: CandidateStatus
+    fee_structure: Optional["JocStructureFeeCreate"] = None
+    initial_payment: Optional[CandidatePaymentCreate] = None
 
 
 class JocStructureFeeBase(BaseModel):
@@ -87,6 +98,9 @@ class CandidateRead(CandidateBase):
     resume_url: Optional[str] = None
     photo_url: Optional[str] = None
     location_area_name: Optional[str] = None
+    skills_names: Optional[List[str]] = None
+    education_names: Optional[List[str]] = None
+    degree_names: Optional[List[str]] = None
     employment_status: CandidateEmploymentStatus = CandidateEmploymentStatus.UNEMPLOYED
     interviews_count: Optional[int] = None
     fee_structure: Optional[JocStructureFeeRead] = None
@@ -94,6 +108,7 @@ class CandidateRead(CandidateBase):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    age: Optional[int] = None
 
     @computed_field(return_type=Optional[int])
     @property
