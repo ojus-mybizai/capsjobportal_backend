@@ -48,8 +48,19 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
-    # File storage
+    # File storage (local)
     MEDIA_ROOT: str = "media"
+
+    # File storage (S3)
+    USE_S3_STORAGE: bool = True
+    AWS_REGION: Optional[str] = None
+    AWS_S3_BUCKET: Optional[str] = None
+    AWS_S3_BASE_URL: Optional[str] = None  # e.g., https://bucket.s3.region.amazonaws.com or CloudFront URL
+    AWS_S3_ENDPOINT_URL: Optional[str] = None  # for S3-compatible (MinIO, etc.)
+    AWS_S3_FOLDER_PREFIX: str = "/uploads/"  # e.g., "uploads/"
+    AWS_S3_PUBLIC_READ: bool = True
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
 
     # Initial superuser (bootstrap admin)
     FIRST_SUPERUSER_EMAIL: Optional[str] = None

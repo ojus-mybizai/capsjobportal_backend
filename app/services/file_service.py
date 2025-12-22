@@ -3,6 +3,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import boto3
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,17 +17,56 @@ class FileService:
         self.session = session
         self.media_root = Path(settings.MEDIA_ROOT)
         self.media_root.mkdir(parents=True, exist_ok=True)
+        self.use_s3 = settings.USE_S3_STORAGE
+
+        if self.use_s3:
+            s3_kwargs: dict = {
+                "region_name": settings.AWS_REGION,
+                "endpoint_url": settings.AWS_S3_ENDPOINT_URL or None,
+            }
+            if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+                s3_kwargs.update(
+                    {
+                        "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
+                        "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+                    }
+                )
+
+            self.s3_client = boto3.client("s3", **s3_kwargs)
+
+            if not settings.AWS_S3_BASE_URL:
+                # Fallback to standard S3 URL if base not provided
+                base = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com"
+                object.__setattr__(settings, "AWS_S3_BASE_URL", base)  # type: ignore
+
+            print("boto client successfull" , self.s3_client)
+        else:
+            print("no client connection error")
+            self.s3_client = None
 
     async def save_upload(self, upload: UploadFile, uploaded_by: Optional[User]) -> File:
         ext = os.path.splitext(upload.filename or "")[1]
         generated_name = f"{uuid.uuid4()}{ext}"
-        target_path = self.media_root / generated_name
-
         content = await upload.read()
-        with open(target_path, "wb") as f:
-            f.write(content)
 
-        public_url = f"/media/{generated_name}"
+        if self.use_s3 and self.s3_client:
+            key = f"{settings.AWS_S3_FOLDER_PREFIX}{generated_name}"
+            extra_args = {"ContentType": upload.content_type or "application/octet-stream"}
+            if settings.AWS_S3_PUBLIC_READ:
+                extra_args["ACL"] = "public-read"
+
+            self.s3_client.put_object(
+                Bucket=settings.AWS_S3_BUCKET,
+                Key=key,
+                Body=content,
+                **extra_args,
+            )
+            public_url = f"{settings.AWS_S3_BASE_URL}/{key}"
+        else:
+            target_path = self.media_root / generated_name
+            with open(target_path, "wb") as f:
+                f.write(content)
+            public_url = f"/media/{generated_name}"
 
         db_file = File(
             url=public_url,

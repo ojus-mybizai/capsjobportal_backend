@@ -16,6 +16,7 @@ from app.models.candidate import (
     CandidatePayment,
     CandidateStatus,
     ExperienceLevel,
+    Gender,
     JocStructureFee,
 )
 from app.models.interview import Interview
@@ -90,6 +91,7 @@ async def list_candidates(
     expected_salary_max: Optional[int] = Query(None, ge=0),
     experience_level: Optional["ExperienceLevel"] = Query(None),
     skills: Optional[List[str]] = Query(None),
+    gender: Optional[Gender] = Query(None),
     has_resume: Optional[bool] = Query(None),
     has_photo: Optional[bool] = Query(None),
     created_from: Optional[datetime] = Query(None),
@@ -123,6 +125,8 @@ async def list_candidates(
         filters.append(Candidate.expected_salary <= expected_salary_max)
     if experience_level is not None:
         filters.append(Candidate.experience_level == experience_level.value)
+    if gender is not None:
+        filters.append(Candidate.gender == gender.value)
     if skills:
         filters.append(Candidate.skills.contains(skills))
     if has_resume is True:
