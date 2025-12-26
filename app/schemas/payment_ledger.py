@@ -27,6 +27,9 @@ class PaymentLedgerItem(BaseModel):
 
     remarks: str | None = None
 
+    # For candidate payments, indicate whether it is a JOC fee or a registration fee
+    candidate_payment_type: str | None = None
+
 
 class PaymentDueItem(BaseModel):
     source: str  # PLACEMENT_INCOME_PENDING or JOC_FEE_PENDING
@@ -36,3 +39,12 @@ class PaymentDueItem(BaseModel):
     total_amount: int
     balance: int
     total_received: int
+
+
+class PaymentDueSummary(BaseModel):
+    placement_income_pending_count: int
+    placement_income_pending_amount: int
+    joc_pending_count: int
+    joc_pending_amount: int
+    total_pending_count: int
+    total_pending_amount: int

@@ -73,8 +73,10 @@ class Candidate(TimestampMixin, Base):
     location_area_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("master_location.id"), nullable=True
     )
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
     job_preferences: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=CandidateStatus.REGISTERED.value, index=True
     )

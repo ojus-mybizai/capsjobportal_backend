@@ -3,21 +3,21 @@ from uuid import UUID
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import cast, func, literal, select, String
+from sqlalchemy import cast, func, literal, select, String, case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
 from app.models.base import GUID
-from app.models.candidate import Candidate, CandidatePayment
+from app.models.candidate import Candidate, CandidatePayment, CandidateStatus
 from app.models.company import Company, CompanyPayment
 from app.models.job import Job
 from app.models.placement_income import PlacementIncome, PlacementIncomePayment
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
 from app.schemas.company import CompanyPaymentCreate, CompanyPaymentRead
-from app.schemas.payment_ledger import PaymentLedgerItem, PaymentDueItem
+from app.schemas.payment_ledger import PaymentLedgerItem, PaymentDueItem, PaymentDueSummary
 
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -106,6 +106,58 @@ async def list_pending_dues(
     return success_response(items)
 
 
+@router.get("/pending-dues/summary", response_model=APIResponse[PaymentDueSummary])
+async def pending_dues_summary(
+    due_before: datetime | None = Query(None, description="Optional cutoff date for due items"),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[PaymentDueSummary]:
+    placement_income_pending_count = 0
+    placement_income_pending_amount = 0
+    joc_pending_count = 0
+    joc_pending_amount = 0
+
+    # Placement income pending balances
+    pi_filters = [PlacementIncome.is_active.is_(True)]
+    if due_before is not None:
+        pi_filters.append(PlacementIncome.due_date <= due_before)
+    pi_stmt = select(PlacementIncome.balance).where(*pi_filters)
+    pi_res = await session.execute(pi_stmt)
+    for (balance,) in pi_res.all():
+        bal = int(balance or 0)
+        if bal > 0:
+            placement_income_pending_count += 1
+            placement_income_pending_amount += bal
+
+    # JOC fee pending balances
+    from app.models.candidate import JocStructureFee  # local import to avoid cycle
+
+    joc_filters = [JocStructureFee.is_active.is_(True)]
+    if due_before is not None:
+        joc_filters.append(JocStructureFee.due_date <= due_before)
+    joc_stmt = select(JocStructureFee.balance).where(*joc_filters)
+    joc_res = await session.execute(joc_stmt)
+    for (balance,) in joc_res.all():
+        bal = int(balance or 0)
+        if bal > 0:
+            joc_pending_count += 1
+            joc_pending_amount += bal
+
+    total_pending_count = placement_income_pending_count + joc_pending_count
+    total_pending_amount = placement_income_pending_amount + joc_pending_amount
+
+    return success_response(
+        PaymentDueSummary(
+            placement_income_pending_count=placement_income_pending_count,
+            placement_income_pending_amount=placement_income_pending_amount,
+            joc_pending_count=joc_pending_count,
+            joc_pending_amount=joc_pending_amount,
+            total_pending_count=total_pending_count,
+            total_pending_amount=total_pending_amount,
+        )
+    )
+
+
 @router.get("/ledger", response_model=APIResponse[PaginatedResponse[PaymentLedgerItem]])
 async def list_payment_ledger(
     page: int = Query(1, ge=1),
@@ -142,6 +194,7 @@ async def list_payment_ledger(
             null_text.label("job_title"),
             null_uuid.label("interview_id"),
             null_text.label("remarks"),
+            null_text.label("candidate_payment_type"),
         )
         .select_from(CompanyPayment)
         .join(Company, Company.id == CompanyPayment.company_id)
@@ -150,7 +203,10 @@ async def list_payment_ledger(
     candidate_stmt = (
         select(
             CandidatePayment.id.label("id"),
-            literal("CANDIDATE_PAYMENT").label("source"),
+            case(
+                (Candidate.status == CandidateStatus.JOC.value, literal("JOC_FEE")),
+                else_=literal("REGISTRATION_FEE"),
+            ).label("source"),
             CandidatePayment.payment_date.label("payment_date"),
             CandidatePayment.amount.label("amount"),
             CandidatePayment.created_at.label("created_at"),
@@ -164,6 +220,10 @@ async def list_payment_ledger(
             null_text.label("job_title"),
             null_uuid.label("interview_id"),
             CandidatePayment.remarks.label("remarks"),
+            case(
+                (Candidate.status == CandidateStatus.JOC.value, literal("JOC_FEE")),
+                else_=literal("REGISTRATION_FEE"),
+            ).label("candidate_payment_type"),
         )
         .select_from(CandidatePayment)
         .join(Candidate, Candidate.id == CandidatePayment.candidate_id)
@@ -186,6 +246,7 @@ async def list_payment_ledger(
             Job.title.label("job_title"),
             PlacementIncome.interview_id.label("interview_id"),
             PlacementIncomePayment.remarks.label("remarks"),
+            null_text.label("candidate_payment_type"),
         )
         .select_from(PlacementIncomePayment)
         .join(PlacementIncome, PlacementIncome.id == PlacementIncomePayment.placement_income_id)

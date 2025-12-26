@@ -3,19 +3,20 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
+from app.models.candidate import Candidate
 from app.models.interview import Interview
 from app.models.job import Job, JobStatus, JobType, Gender, Joined_candidates
 from app.models.master import MasterDegree, MasterEducation, MasterJobCategory, MasterSkill, MasterLocation
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
-from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
+from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate, RelatedCandidateItem
 from app.services.file_service import FileService
 
 
@@ -42,6 +43,110 @@ def _as_uuid_list(value: Optional[list | dict]) -> list[UUID]:
         except Exception:
             continue
     return result
+
+
+@router.get(
+    "/{job_id}/related-candidates",
+    response_model=APIResponse[list[RelatedCandidateItem]],
+)
+async def list_job_related_candidates(
+    job_id: UUID,
+    include_inactive_candidates: bool = Query(False),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[list[RelatedCandidateItem]]:
+    job = await session.get(Job, job_id)
+    if not job or not job.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    # Collect job attributes
+    job_skill_ids = set(_as_uuid_list(job.skills))
+    job_edu_ids = set(_as_uuid_list(job.education))
+    job_degree_ids = set(_as_uuid_list(job.degree))
+    salary_min = job.salary_min
+    salary_max = job.salary_max
+
+    # Exclude candidates already interviewed for this job
+    interviewed_stmt = select(Interview.candidate_id).where(
+        Interview.job_id == job_id,
+        Interview.is_active.is_(True),
+    )
+    interviewed_res = await session.execute(interviewed_stmt)
+    interviewed_ids = {row[0] for row in interviewed_res.all() if row[0]}
+
+    filters = [Candidate.is_active.is_(True)] if not include_inactive_candidates else []
+    if interviewed_ids:
+        filters.append(Candidate.id.notin_(interviewed_ids))
+    if job_skill_ids:
+        skill_subfilters = [cast(Candidate.skills, String).ilike(f"%{sid}%") for sid in job_skill_ids]
+        filters.append(or_(*skill_subfilters))
+    if job_edu_ids:
+        edu_subfilters = [cast(Candidate.education, String).ilike(f"%{eid}%") for eid in job_edu_ids]
+        filters.append(or_(*edu_subfilters))
+    if job_degree_ids:
+        degree_subfilters = [cast(Candidate.degree, String).ilike(f"%{did}%") for did in job_degree_ids]
+        filters.append(or_(*degree_subfilters))
+
+    if salary_min is not None or salary_max is not None:
+        salary_filters = []
+        if salary_min is not None:
+            salary_filters.append(
+                or_(
+                    Candidate.expected_salary.is_(None),
+                    Candidate.expected_salary >= salary_min,
+                )
+            )
+        if salary_max is not None:
+            salary_filters.append(
+                or_(
+                    Candidate.expected_salary.is_(None),
+                    Candidate.expected_salary <= salary_max,
+                )
+            )
+        filters.extend(salary_filters)
+
+    stmt = (
+        select(
+            Candidate.id,
+            Candidate.full_name,
+            Candidate.email,
+            Candidate.mobile_number,
+            MasterLocation.name.label("location_area_name"),
+            Candidate.expected_salary,
+            Candidate.status,
+            Candidate.experience_level,
+            Candidate.location_area_id,
+            Candidate.skills,
+            Candidate.education,
+            Candidate.degree,
+        )
+        .select_from(Candidate)
+        .join(MasterLocation, MasterLocation.id == Candidate.location_area_id, isouter=True)
+        .where(*filters)
+        .order_by(Candidate.created_at.desc())
+    )
+
+    res = await session.execute(stmt)
+    items: list[RelatedCandidateItem] = []
+    for row in res.all():
+        items.append(
+            RelatedCandidateItem(
+                id=row.id,
+                full_name=row.full_name,
+                email=row.email,
+                mobile_number=row.mobile_number,
+                location_area_name=row.location_area_name,
+                expected_salary=row.expected_salary,
+                status=row.status,
+                experience_level=row.experience_level,
+                location_area_id=row.location_area_id,
+                skills=row.skills,
+                education=row.education,
+                degree=row.degree,
+            )
+        )
+
+    return success_response(items)
 
 
 async def _hydrate_job_with_names(session: AsyncSession, job: Job) -> JobRead:

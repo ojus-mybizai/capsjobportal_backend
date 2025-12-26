@@ -3,7 +3,7 @@ from uuid import UUID
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -20,10 +20,14 @@ from app.models.candidate import (
     JocStructureFee,
 )
 from app.models.interview import Interview
+from app.models.job import Job, JobStatus
+from app.models.company import Company
 from app.models.user import User
-from app.models.master import MasterSkill, MasterEducation, MasterDegree
+from app.models.master import MasterSkill, MasterEducation, MasterDegree, MasterLocation
 from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate, CandidateStatusChange
 from app.schemas.common import PaginatedResponse
+from app.schemas.report_interviews import CandidateJobsReportItem
+from app.schemas.job import RelatedJobItem
 from app.services.file_service import FileService
 
 
@@ -63,6 +67,20 @@ async def _validate_master_ids(session: AsyncSession, model, ids: Optional[list[
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"One or more {model.__tablename__} ids are invalid",
         )
+
+
+def _as_uuid_list(value: Optional[list | dict]) -> list[UUID]:
+    if not value:
+        return []
+    if isinstance(value, dict):
+        value = list(value.values())
+    result: list[UUID] = []
+    for v in value:
+        try:
+            result.append(UUID(str(v)))
+        except Exception:
+            continue
+    return result
 
 
 async def _hydrate_candidate_with_names(session: AsyncSession, candidate: Candidate) -> CandidateRead:
@@ -212,6 +230,111 @@ async def list_candidates(
 
     data = PaginatedResponse[CandidateRead](items=items, total=total, page=page, limit=limit)
     return success_response(data)
+
+
+@router.get(
+    "/{candidate_id}/related-jobs",
+    response_model=APIResponse[list[RelatedJobItem]],
+)
+async def list_candidate_related_jobs(
+    candidate_id: UUID,
+    include_closed: bool = Query(False, description="Include non-open jobs"),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[list[RelatedJobItem]]:
+    candidate = await session.get(Candidate, candidate_id)
+    if not candidate or not candidate.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    skill_ids = set(_as_uuid_list(candidate.skills))
+    edu_ids = set(_as_uuid_list(candidate.education))
+    degree_ids = set(_as_uuid_list(candidate.degree))
+    expected_salary = candidate.expected_salary
+
+    # Exclude jobs already applied/interviewed
+    applied_job_ids_stmt = select(Interview.job_id).where(
+        Interview.candidate_id == candidate_id, Interview.is_active.is_(True)
+    )
+    applied_job_ids_res = await session.execute(applied_job_ids_stmt)
+    applied_job_ids = {row[0] for row in applied_job_ids_res.all() if row[0]}
+
+    filters = [Job.is_active.is_(True)]
+    if not include_closed:
+        filters.append(Job.status == JobStatus.OPEN.value)
+    if applied_job_ids:
+        filters.append(Job.id.notin_(applied_job_ids))
+    if skill_ids:
+        skill_subfilters = [cast(Job.skills, String).ilike(f"%{sid}%") for sid in skill_ids]
+        filters.append(or_(*skill_subfilters))
+    if edu_ids:
+        edu_subfilters = [cast(Job.education, String).ilike(f"%{eid}%") for eid in edu_ids]
+        filters.append(or_(*edu_subfilters))
+    if degree_ids:
+        degree_subfilters = [cast(Job.degree, String).ilike(f"%{did}%") for did in degree_ids]
+        filters.append(or_(*degree_subfilters))
+    if expected_salary is not None:
+        filters.append(
+            or_(
+                and_(Job.salary_min.is_(None), Job.salary_max.is_(None)),
+                and_(Job.salary_min.is_(None), Job.salary_max >= expected_salary),
+                and_(Job.salary_min <= expected_salary, Job.salary_max.is_(None)),
+                and_(Job.salary_min <= expected_salary, Job.salary_max >= expected_salary),
+            )
+        )
+
+    stmt = (
+        select(
+            Job.id,
+            Job.title,
+            Job.company_id,
+            Company.name.label("company_name"),
+            MasterLocation.name.label("location_area_name"),
+            Job.salary_min,
+            Job.salary_max,
+            Job.status,
+            Job.location_area_id,
+            Job.experience_level,
+            Job.skills,
+            Job.education,
+            Job.degree,
+        )
+        .select_from(Job)
+        .join(Company, Company.id == Job.company_id)
+        .join(MasterLocation, MasterLocation.id == Job.location_area_id, isouter=True)
+        .where(*filters)
+        .order_by(Job.created_at.desc())
+    )
+
+    res = await session.execute(stmt)
+    items: list[RelatedJobItem] = []
+    for row in res.all():
+        items.append(
+            RelatedJobItem(
+                id=row.id,
+                title=row.title,
+                company_id=row.company_id,
+                company_name=row.company_name,
+                location_area_name=row.location_area_name,
+                salary_min=row.salary_min,
+                salary_max=row.salary_max,
+                status=row.status,
+                location_area_id=row.location_area_id,
+                experience_level=row.experience_level,
+                skills=row.skills,
+                education=row.education,
+                degree=row.degree,
+            )
+        )
+
+    # Fix experience_level type assignment
+    for item in items:
+        if item.experience_level and not isinstance(item.experience_level, ExperienceLevel):
+            try:
+                item.experience_level = ExperienceLevel(item.experience_level)
+            except Exception:
+                item.experience_level = None
+
+    return success_response(items)
 
 
 @router.post("/", response_model=APIResponse[CandidateRead])
@@ -420,7 +543,7 @@ async def update_candidate(
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Candidate update conflict (email or mobile_number already exists)",
+            detail="Candidate update conflict",
         ) from exc
 
     await session.refresh(candidate)
@@ -428,130 +551,80 @@ async def update_candidate(
     return success_response(hydrated)
 
 
-@router.put("/{candidate_id}/status", response_model=APIResponse[CandidateRead])
-async def change_candidate_status(
-    candidate_id: UUID,
-    body: CandidateStatusChange,
-    session: AsyncSession = Depends(deps.get_db_session),
-    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
-) -> APIResponse[CandidateRead]:
-    stmt = (
-        select(Candidate)
-        .options(
-            joinedload(Candidate.location_area),
-            selectinload(Candidate.fee_structure),
-            selectinload(Candidate.payments),
-        )
-        .where(Candidate.id == candidate_id)
-    )
-    res = await session.execute(stmt)
-    candidate = res.scalar_one_or_none()
-    if candidate is None or not candidate.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
-
-    current_status = CandidateStatus(candidate.status)
-    target_status = CandidateStatus(body.status)
-
-    # Allowed forward transitions only
-    allowed = {
-        CandidateStatus.FREE: {CandidateStatus.REGISTERED, CandidateStatus.JOC},
-        CandidateStatus.REGISTERED: {CandidateStatus.JOC, CandidateStatus.CAPS},
-        CandidateStatus.JOC: {CandidateStatus.CAPS},
-        CandidateStatus.CAPS: set(),
-    }
-    if target_status not in allowed.get(current_status, set()):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot change status from {current_status.value} to {target_status.value}",
-        )
-
-    # Handle payload requirements per target status
-    if target_status == CandidateStatus.JOC:
-        if body.fee_structure is None or body.initial_payment is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="fee_structure and initial_payment are required when moving to JOC",
-            )
-
-    if target_status in {CandidateStatus.CAPS, CandidateStatus.FREE}:
-        if body.fee_structure is not None or body.initial_payment is not None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="fee_structure and initial_payment are not allowed for CAPS/FREE",
-            )
-
-    # Apply status change
-    candidate.status = target_status.value
-
-    # JOC handling
-    if target_status == CandidateStatus.JOC:
-        fs = body.fee_structure
-        fee_obj = candidate.fee_structure
-        # create or update fee_structure
-        if candidate.fee_structure is None:
-            fee_row = JocStructureFee(
-                candidate_id=candidate.id,
-                total_fee=int(fs.total_fee),
-                balance=int(fs.total_fee),
-                due_date=fs.due_date,
-                is_active=True,
-            )
-            session.add(fee_row)
-            fee_obj = fee_row
-        else:
-            candidate.fee_structure.total_fee = int(fs.total_fee)
-            candidate.fee_structure.due_date = fs.due_date
-            candidate.fee_structure.balance = int(fs.total_fee)
-            fee_obj = candidate.fee_structure
-
-        if body.initial_payment is not None:
-            payment = CandidatePayment(
-                candidate_id=candidate.id,
-                amount=body.initial_payment.amount,
-                payment_date=body.initial_payment.payment_date,
-                remarks=body.initial_payment.remarks,
-                is_active=True,
-            )
-            session.add(payment)
-            # reduce balance if fee_structure exists now
-            if fee_obj is not None:
-                fee_obj.balance = max(fee_obj.balance - int(body.initial_payment.amount), 0)
-
-    try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Candidate status change conflict",
-        ) from exc
-
-    await session.refresh(candidate)
-    hydrated = await _hydrate_candidate_with_names(session, candidate)
-    return success_response(hydrated)
-
-
-@router.delete("/{candidate_id}", response_model=APIResponse[CandidateRead])
-async def delete_candidate(
+@router.get("/{candidate_id}/applied-jobs", response_model=APIResponse[list[CandidateJobsReportItem]])
+async def list_candidate_applied_jobs(
     candidate_id: UUID,
     session: AsyncSession = Depends(deps.get_db_session),
-    current_user: User = Depends(deps.require_role(["admin"])),
-) -> APIResponse[CandidateRead]:
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[list[CandidateJobsReportItem]]:
     candidate = await session.get(Candidate, candidate_id)
-    if not candidate or not candidate.is_active:
+    if not candidate:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
-    candidate.is_active = False
-    await session.commit()
-    stmt = (
-        select(Candidate)
-        .options(selectinload(Candidate.fee_structure), selectinload(Candidate.payments))
-        .where(Candidate.id == candidate_id)
+    base_filters = [Interview.candidate_id == candidate_id]
+
+    # grouped view of jobs with counts and last date
+    job_stmt = (
+        select(
+            Job.id.label("job_id"),
+            Job.title.label("job_title"),
+            Job.company_id.label("company_id"),
+            Company.name.label("company_name"),
+            Job.status.label("job_status"),
+            func.count(Interview.id).label("interviews_count"),
+            func.max(Interview.interview_date).label("last_interview_date"),
+        )
+        .select_from(Interview)
+        .join(Job, Job.id == Interview.job_id)
+        .join(Company, Company.id == Interview.company_id)
+        .where(*base_filters)
+        .group_by(Job.id, Job.title, Job.company_id, Company.name, Job.status)
+        .order_by(func.max(Interview.interview_date).desc())
     )
-    res = await session.execute(stmt)
-    candidate_with_rels = res.scalar_one()
-    hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
-    return success_response(hydrated)
+    job_res = await session.execute(job_stmt)
+    rows = job_res.all()
+
+    latest_status_by_job: dict[UUID, str] = {}
+    if rows:
+        job_ids = [row.job_id for row in rows]
+        latest_ts_subq = (
+            select(
+                Interview.job_id.label("job_id"),
+                func.max(Interview.interview_date).label("max_date"),
+            )
+            .where(*base_filters, Interview.job_id.in_(job_ids))
+            .group_by(Interview.job_id)
+            .subquery()
+        )
+        latest_status_stmt = (
+            select(Interview.job_id, Interview.status)
+            .join(
+                latest_ts_subq,
+                (latest_ts_subq.c.job_id == Interview.job_id)
+                & (latest_ts_subq.c.max_date == Interview.interview_date),
+            )
+            .where(Interview.candidate_id == candidate_id)
+        )
+        latest_status_res = await session.execute(latest_status_stmt)
+        latest_status_by_job = {row[0]: row[1] for row in latest_status_res.all()}
+
+    items: list[CandidateJobsReportItem] = []
+    for row in rows:
+        items.append(
+            CandidateJobsReportItem(
+                job_id=row.job_id,
+                job_title=row.job_title,
+                company_id=row.company_id,
+                company_name=row.company_name,
+                job_status=row.job_status,
+                interviews_count=int(row.interviews_count or 0),
+                latest_interview_status=latest_status_by_job.get(row.job_id),
+                last_interview_date=row.last_interview_date,
+            )
+        )
+    
+
+    return success_response(items)
 
 
 @router.post("/{candidate_id}/upload", response_model=APIResponse[CandidateRead])

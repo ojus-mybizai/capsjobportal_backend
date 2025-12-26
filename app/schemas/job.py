@@ -7,6 +7,37 @@ from pydantic import BaseModel, Field, computed_field
 from app.models.job import JobStatus, JobType, Gender, ExperienceLevel
 
 
+class RelatedJobItem(BaseModel):
+    id: UUID
+    title: str
+    company_id: UUID
+    company_name: str | None = None
+    location_area_name: str | None = None
+    salary_min: int | None = None
+    salary_max: int | None = None
+    status: JobStatus
+    location_area_id: UUID | None = None
+    experience_level: ExperienceLevel | None = None
+    skills: list[str] | dict | None = None
+    education: list[str] | None = None
+    degree: list[str] | None = None
+
+
+class RelatedCandidateItem(BaseModel):
+    id: UUID
+    full_name: str | None = None
+    email: str | None = None
+    mobile_number: str | None = None
+    location_area_name: str | None = None
+    expected_salary: int | None = None
+    status: str | None = None
+    experience_level: ExperienceLevel | None = None
+    location_area_id: UUID | None = None
+    skills: list[str] | dict | None = None
+    education: list[str] | None = None
+    degree: list[str] | None = None
+
+
 class JobBase(BaseModel):
     company_id: UUID
     title: str

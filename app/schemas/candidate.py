@@ -17,8 +17,10 @@ class CandidateBase(BaseModel):
     skills: Optional[list[str] | dict] = None  # list of MasterSkill ids
     expected_salary: Optional[int] = Field(default=None, ge=0)
     location_area_id: Optional[UUID] = None
+    address: Optional[str] = None
     job_preferences: Optional[dict | list] = None
     notes: Optional[str] = None
+    reference: Optional[str] = None
     status: CandidateStatus = CandidateStatus.REGISTERED
     education: Optional[List[str]] = None  # list of MasterEducation ids
     degree: Optional[List[str]] = None  # list of MasterDegree ids
