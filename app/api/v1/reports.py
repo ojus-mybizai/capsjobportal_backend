@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
-from app.models.candidate import Candidate, CandidatePayment, CandidateStatus, JocStructureFee
+from app.models.candidate import Candidate, CandidatePayment, CandidateStatus, CourseStructureFee
 from app.models.company import Company, CompanyPayment
 from app.models.interview import Interview, InterviewStatus
 from app.models.job import Job, JobStatus
@@ -413,13 +413,13 @@ async def candidates_summary(
     status_result = await session.execute(status_stmt)
     status_breakdown = {row[0]: int(row[1]) for row in status_result.all()}
 
-    fee_filters = [JocStructureFee.is_active.is_(True)]
-    _apply_date_range(fee_filters, JocStructureFee.created_at, start_date, end_date)
-    total_fee_stmt = select(func.coalesce(func.sum(JocStructureFee.total_fee), 0)).where(*fee_filters)
+    fee_filters = [CourseStructureFee.is_active.is_(True)]
+    _apply_date_range(fee_filters, CourseStructureFee.created_at, start_date, end_date)
+    total_fee_stmt = select(func.coalesce(func.sum(CourseStructureFee.total_fee), 0)).where(*fee_filters)
     total_fee_res = await session.execute(total_fee_stmt)
     total_fee = int(total_fee_res.scalar_one() or 0)
 
-    total_balance_stmt = select(func.coalesce(func.sum(JocStructureFee.balance), 0)).where(*fee_filters)
+    total_balance_stmt = select(func.coalesce(func.sum(CourseStructureFee.balance), 0)).where(*fee_filters)
     total_balance_res = await session.execute(total_balance_stmt)
     balance_pending = int(total_balance_res.scalar_one() or 0)
 

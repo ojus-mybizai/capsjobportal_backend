@@ -25,8 +25,7 @@ from app.models.master import MasterLocation
 
 class CandidateStatus(str, enum.Enum):
     REGISTERED = "REGISTERED"
-    CAPS = "CAPS"
-    JOC = "JOC"
+    COURSE = "COURSE"
     FREE = "FREE"
 
 
@@ -92,8 +91,8 @@ class Candidate(TimestampMixin, Base):
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    fee_structure: Mapped["JocStructureFee"] = relationship(
-        "JocStructureFee",
+    fee_structure: Mapped["CourseStructureFee"] = relationship(
+        "CourseStructureFee",
         back_populates="candidate",
         uselist=False,
         cascade="all, delete-orphan",
@@ -115,8 +114,8 @@ class Candidate(TimestampMixin, Base):
             return None
         return self.location_area.name
 
-class JocStructureFee(TimestampMixin, Base):
-    __tablename__ = "joc_structure_fees"
+class CourseStructureFee(TimestampMixin, Base):
+    __tablename__ = "course_structure_fees"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     candidate_id: Mapped[uuid.UUID] = mapped_column(

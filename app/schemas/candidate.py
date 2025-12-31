@@ -36,50 +36,50 @@ class CandidateBase(BaseModel):
 
 
 class CandidateCreate(CandidateBase):
-    fee_structure: Optional["JocStructureFeeCreate"] = None
+    fee_structure: Optional["CourseStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
 
     @model_validator(mode="after")
     def _validate_flow(self):
-        if self.status in {CandidateStatus.CAPS, CandidateStatus.FREE}:
+        if self.status in {CandidateStatus.FREE}:
             if self.fee_structure is not None or self.initial_payment is not None:
-                raise ValueError("fee_structure and initial_payment are not allowed for CAPS/FREE")
+                raise ValueError("fee_structure and initial_payment are not allowed for FREE")
         if self.status == CandidateStatus.REGISTERED:
             if self.initial_payment is None:
                 raise ValueError("initial_payment is required when status is REGISTERED")
             if self.fee_structure is not None:
                 raise ValueError("fee_structure is not allowed when status is REGISTERED")
-        if self.status == CandidateStatus.JOC:
+        if self.status == CandidateStatus.COURSE:
             if self.fee_structure is None:
-                raise ValueError("fee_structure is required when status is JOC")
+                raise ValueError("fee_structure is required when status is COURSE")
             if self.initial_payment is None:
-                raise ValueError("initial_payment is required when status is JOC")
+                raise ValueError("initial_payment is required when status is COURSE")
         return self
 
 
 class CandidateUpdate(CandidateBase):
     is_active: Optional[bool] = None
-    fee_structure: Optional["JocStructureFeeCreate"] = None
+    fee_structure: Optional["CourseStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
     age: Optional[int] = None  # ignored if dob provided
 
 
 class CandidateStatusChange(BaseModel):
     status: CandidateStatus
-    fee_structure: Optional["JocStructureFeeCreate"] = None
+    fee_structure: Optional["CourseStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
 
 
-class JocStructureFeeBase(BaseModel):
+class CourseStructureFeeBase(BaseModel):
     total_fee: int = Field(default=0, ge=0)
     due_date: Optional[datetime] = None
 
 
-class JocStructureFeeCreate(JocStructureFeeBase):
+class CourseStructureFeeCreate(CourseStructureFeeBase):
     pass
 
 
-class JocStructureFeeRead(JocStructureFeeBase):
+class CourseStructureFeeRead(CourseStructureFeeBase):
     id: UUID
     candidate_id: UUID
     balance: int
@@ -105,7 +105,7 @@ class CandidateRead(CandidateBase):
     degree_names: Optional[List[str]] = None
     employment_status: CandidateEmploymentStatus = CandidateEmploymentStatus.UNEMPLOYED
     interviews_count: Optional[int] = None
-    fee_structure: Optional[JocStructureFeeRead] = None
+    fee_structure: Optional[CourseStructureFeeRead] = None
     payments: Optional[List[CandidatePaymentRead]] = None
     is_active: bool
     created_at: datetime
