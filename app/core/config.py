@@ -12,7 +12,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    PROJECT_NAME: str = "CAPS Job Portal API"
+    PROJECT_NAME: str = "Job Portal API"
     ENVIRONMENT: str = "local"
     DEBUG: bool = True
 

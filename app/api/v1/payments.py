@@ -66,33 +66,33 @@ async def list_pending_dues(
             )
         )
 
-    # JOC fee pending balances
-    from app.models.candidate import JocStructureFee  # local import to avoid cycle
+    # Course fee pending balances
+    from app.models.candidate import CourseStructureFee  # local import to avoid cycle
 
-    joc_filters = [JocStructureFee.is_active.is_(True)]
+    course_filters = [CourseStructureFee.is_active.is_(True)]
     if due_before is not None:
-        joc_filters.append(JocStructureFee.due_date <= due_before)
-    joc_stmt = (
+        course_filters.append(CourseStructureFee.due_date <= due_before)
+    course_stmt = (
         select(
-            JocStructureFee.id,
-            JocStructureFee.balance,
-            JocStructureFee.total_fee,
-            JocStructureFee.candidate_id,
+            CourseStructureFee.id,
+            CourseStructureFee.balance,
+            CourseStructureFee.total_fee,
+            CourseStructureFee.candidate_id,
             Candidate.full_name.label("candidate_name"),
             Candidate.mobile_number.label("candidate_contact_number"),
         )
-        .select_from(JocStructureFee)
-        .join(Candidate, Candidate.id == JocStructureFee.candidate_id)
-        .where(*joc_filters)
-        .order_by(JocStructureFee.due_date.asc())
+        .select_from(CourseStructureFee)
+        .join(Candidate, Candidate.id == CourseStructureFee.candidate_id)
+        .where(*course_filters)
+        .order_by(CourseStructureFee.due_date.asc())
     )
-    joc_res = await session.execute(joc_stmt)
-    for row in joc_res.all():
+    course_res = await session.execute(course_stmt)
+    for row in course_res.all():
         if int(row.balance or 0) <= 0:
             continue
         items.append(
             PaymentDueItem(
-                source="JOC_FEE_PENDING",
+                source="COURSE_FEE_PENDING",
                 balance=int(row.balance or 0),
                 total_amount=int(row.total_fee or 0),
                 candidate_id=row.candidate_id,
@@ -114,8 +114,8 @@ async def pending_dues_summary(
 ) -> APIResponse[PaymentDueSummary]:
     placement_income_pending_count = 0
     placement_income_pending_amount = 0
-    joc_pending_count = 0
-    joc_pending_amount = 0
+    course_pending_count = 0
+    course_pending_amount = 0
 
     # Placement income pending balances
     pi_filters = [PlacementIncome.is_active.is_(True)]
@@ -129,29 +129,29 @@ async def pending_dues_summary(
             placement_income_pending_count += 1
             placement_income_pending_amount += bal
 
-    # JOC fee pending balances
-    from app.models.candidate import JocStructureFee  # local import to avoid cycle
+    # Course fee pending balances
+    from app.models.candidate import CourseStructureFee  # local import to avoid cycle
 
-    joc_filters = [JocStructureFee.is_active.is_(True)]
+    course_filters = [CourseStructureFee.is_active.is_(True)]
     if due_before is not None:
-        joc_filters.append(JocStructureFee.due_date <= due_before)
-    joc_stmt = select(JocStructureFee.balance).where(*joc_filters)
-    joc_res = await session.execute(joc_stmt)
-    for (balance,) in joc_res.all():
+        course_filters.append(CourseStructureFee.due_date <= due_before)
+    course_stmt = select(CourseStructureFee.balance).where(*course_filters)
+    course_res = await session.execute(course_stmt)
+    for (balance,) in course_res.all():
         bal = int(balance or 0)
         if bal > 0:
-            joc_pending_count += 1
-            joc_pending_amount += bal
+            course_pending_count += 1
+            course_pending_amount += bal
 
-    total_pending_count = placement_income_pending_count + joc_pending_count
-    total_pending_amount = placement_income_pending_amount + joc_pending_amount
+    total_pending_count = placement_income_pending_count + course_pending_count
+    total_pending_amount = placement_income_pending_amount + course_pending_amount
 
     return success_response(
         PaymentDueSummary(
             placement_income_pending_count=placement_income_pending_count,
             placement_income_pending_amount=placement_income_pending_amount,
-            joc_pending_count=joc_pending_count,
-            joc_pending_amount=joc_pending_amount,
+            course_pending_count=course_pending_count,
+            course_pending_amount=course_pending_amount,
             total_pending_count=total_pending_count,
             total_pending_amount=total_pending_amount,
         )
@@ -204,7 +204,7 @@ async def list_payment_ledger(
         select(
             CandidatePayment.id.label("id"),
             case(
-                (Candidate.status == CandidateStatus.JOC.value, literal("JOC_FEE")),
+                (Candidate.status == CandidateStatus.COURSE.value, literal("COURSE_FEE")),
                 else_=literal("REGISTRATION_FEE"),
             ).label("source"),
             CandidatePayment.payment_date.label("payment_date"),
@@ -221,7 +221,7 @@ async def list_payment_ledger(
             null_uuid.label("interview_id"),
             CandidatePayment.remarks.label("remarks"),
             case(
-                (Candidate.status == CandidateStatus.JOC.value, literal("JOC_FEE")),
+                (Candidate.status == CandidateStatus.COURSE.value, literal("COURSE_FEE")),
                 else_=literal("REGISTRATION_FEE"),
             ).label("candidate_payment_type"),
         )

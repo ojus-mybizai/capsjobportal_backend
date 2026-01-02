@@ -27,12 +27,12 @@ class PaymentLedgerItem(BaseModel):
 
     remarks: str | None = None
 
-    # For candidate payments, indicate whether it is a JOC fee or a registration fee
+    # For candidate payments, indicate whether it is a course fee or a registration fee
     candidate_payment_type: str | None = None
 
 
 class PaymentDueItem(BaseModel):
-    source: str  # PLACEMENT_INCOME_PENDING or JOC_FEE_PENDING
+    source: str  # PLACEMENT_INCOME_PENDING or COURSE_FEE_PENDING
     candidate_id: UUID
     candidate_name: str | None = None
     candidate_contact_number: str | None = None
@@ -44,7 +44,7 @@ class PaymentDueItem(BaseModel):
 class PaymentDueSummary(BaseModel):
     placement_income_pending_count: int
     placement_income_pending_amount: int
-    joc_pending_count: int
-    joc_pending_amount: int
+    course_pending_count: int
+    course_pending_amount: int
     total_pending_count: int
     total_pending_amount: int

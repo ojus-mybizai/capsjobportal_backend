@@ -17,7 +17,7 @@ from app.models.candidate import (
     CandidateStatus,
     ExperienceLevel,
     Gender,
-    JocStructureFee,
+    CourseStructureFee,
 )
 from app.models.interview import Interview
 from app.models.job import Job, JobStatus
@@ -348,12 +348,12 @@ async def create_candidate(
     if isinstance(status_value, CandidateStatus):
         payload["status"] = status_value.value
 
-    fee_payload = body.fee_structure if body.status == CandidateStatus.JOC else None
-    if body.status == CandidateStatus.JOC and fee_payload is None:
+    fee_payload = body.fee_structure if body.status == CandidateStatus.COURSE else None
+    if body.status == CandidateStatus.COURSE and fee_payload is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fee_structure is required")
 
-    pay_payload = body.initial_payment if body.status in {CandidateStatus.REGISTERED, CandidateStatus.JOC} else None
-    if body.status in {CandidateStatus.REGISTERED, CandidateStatus.JOC} and pay_payload is None:
+    pay_payload = body.initial_payment if body.status in {CandidateStatus.REGISTERED, CandidateStatus.COURSE} else None
+    if body.status in {CandidateStatus.REGISTERED, CandidateStatus.COURSE} and pay_payload is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="initial_payment is required")
 
     # Compute age if dob provided
@@ -370,7 +370,7 @@ async def create_candidate(
 
         if fee_payload is not None:
             total_fee = int(fee_payload.total_fee)
-            fee_row = JocStructureFee(
+            fee_row = CourseStructureFee(
                 candidate_id=candidate.id,
                 total_fee=total_fee,
                 balance=total_fee,
@@ -487,11 +487,11 @@ async def update_candidate(
 
     effective_status = CandidateStatus(candidate.status)
 
-    if effective_status in {CandidateStatus.CAPS, CandidateStatus.FREE}:
+    if effective_status in {CandidateStatus.FREE}:
         if body.fee_structure is not None or body.initial_payment is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="fee_structure and initial_payment are not allowed for CAPS/FREE",
+                detail="fee_structure and initial_payment are not allowed for FREE",
             )
 
     if effective_status == CandidateStatus.REGISTERED:
@@ -510,12 +510,12 @@ async def update_candidate(
             )
             session.add(payment)
 
-    if effective_status == CandidateStatus.JOC:
+    if effective_status == CandidateStatus.COURSE:
         print("here")
         if body.fee_structure is not None:
             print(body.fee_structure)
             if candidate.fee_structure is None:
-                fee_row = JocStructureFee(
+                fee_row = CourseStructureFee(
                     candidate_id=candidate.id,
                     total_fee=int(body.fee_structure.total_fee),
                     balance=int(body.fee_structure.total_fee),
@@ -625,6 +625,100 @@ async def list_candidate_applied_jobs(
     
 
     return success_response(items)
+
+
+@router.put("/{candidate_id}/status", response_model=APIResponse[CandidateRead])
+async def update_candidate_status(
+    candidate_id: UUID,
+    body: CandidateStatusChange,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[CandidateRead]:
+    stmt = (
+        select(Candidate)
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
+        .where(Candidate.id == candidate_id)
+    )
+    res = await session.execute(stmt)
+    candidate = res.scalar_one_or_none()
+    if candidate is None or not candidate.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    # Update status
+    candidate.status = body.status.value
+
+    # Handle fee structure and payments based on status
+    if body.status in {CandidateStatus.FREE}:
+        if body.fee_structure is not None or body.initial_payment is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fee_structure and initial_payment are not allowed for FREE",
+            )
+
+    if body.status == CandidateStatus.REGISTERED:
+        if body.fee_structure is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fee_structure is not allowed for REGISTERED",
+            )
+        if body.initial_payment is not None:
+            payment = CandidatePayment(
+                candidate_id=candidate.id,
+                amount=body.initial_payment.amount,
+                payment_date=body.initial_payment.payment_date,
+                remarks=body.initial_payment.remarks,
+                is_active=True,
+            )
+            session.add(payment)
+
+    if body.status == CandidateStatus.COURSE:
+        if body.fee_structure is not None:
+            # Calculate initial balance considering initial payment
+            initial_payment_amount = int(body.initial_payment.amount) if body.initial_payment is not None else 0
+            if candidate.fee_structure is None:
+                fee_row = CourseStructureFee(
+                    candidate_id=candidate.id,
+                    total_fee=int(body.fee_structure.total_fee),
+                    balance=max(int(body.fee_structure.total_fee) - initial_payment_amount, 0),
+                    due_date=body.fee_structure.due_date,
+                    is_active=True,
+                )
+                session.add(fee_row)
+            else:
+                candidate.fee_structure.total_fee = int(body.fee_structure.total_fee)
+                candidate.fee_structure.due_date = body.fee_structure.due_date
+                # Only update balance if fee structure is being modified
+                if body.initial_payment is not None:
+                    candidate.fee_structure.balance = max(int(body.fee_structure.total_fee) - int(body.initial_payment.amount), 0)
+                else:
+                    candidate.fee_structure.balance = int(body.fee_structure.total_fee)
+        
+        if body.initial_payment is not None:
+            payment = CandidatePayment(
+                candidate_id=candidate.id,
+                amount=body.initial_payment.amount,
+                payment_date=body.initial_payment.payment_date,
+                remarks=body.initial_payment.remarks,
+                is_active=True,
+            )
+            session.add(payment)
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Candidate status update conflict",
+        ) from exc
+
+    await session.refresh(candidate)
+    hydrated = await _hydrate_candidate_with_names(session, candidate)
+    return success_response(hydrated)
 
 
 @router.post("/{candidate_id}/upload", response_model=APIResponse[CandidateRead])

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
-from app.models.candidate import Candidate, CandidatePayment, CandidateStatus, JocStructureFee
+from app.models.candidate import Candidate, CandidatePayment, CandidateStatus
 from app.models.user import User
 from app.schemas.candidate_payment import CandidatePaymentCreate, CandidatePaymentRead
 
