@@ -94,6 +94,23 @@ class CompanyUpdate(BaseModel):
         return v
 
 
+class CompanyPublicCreate(BaseModel):
+    """Public payload for creating a company without category/location/verification fields."""
+
+    name: constr(min_length=1)
+    address: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    alternate_number: Optional[str] = None
+    email: Optional[EmailStr] = None
+    google_map_url: Optional[AnyUrl] = None
+    location_link: Optional[str] = None
+    notes: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
+
+
 class CompanyRead(CompanyBase):
     id: UUID
     category_name: Optional[str] = None

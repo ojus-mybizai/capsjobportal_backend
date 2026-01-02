@@ -8,7 +8,8 @@ from sqlalchemy.orm import joinedload
 from app.api import deps
 from app.core.response import APIResponse, success_response
 from app.models.company import Company
-from app.schemas.company import CompanyPublicRead
+from app.models.user import User
+from app.schemas.company import CompanyPublicCreate, CompanyPublicRead
 
 
 router = APIRouter(prefix="/public", tags=["public"])
@@ -38,4 +39,31 @@ async def public_company_detail(
     if company is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
+    return success_response(CompanyPublicRead.model_validate(company))
+
+
+@router.post("/addcompany/{user_id}", response_model=APIResponse[CompanyPublicRead])
+async def public_create_company(
+    user_id: UUID,
+    body: CompanyPublicCreate,
+    session: AsyncSession = Depends(deps.get_db_session),
+) -> APIResponse[CompanyPublicRead]:
+    user = await session.get(User, user_id)
+    if user is None or getattr(user, "is_active", False) is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user",
+        )
+
+    data = body.model_dump()
+    company = Company(
+        **data,
+        created_by=user.id,
+        verification_status=False,
+        company_status="FREE",
+    )
+
+    session.add(company)
+    await session.commit()
+    await session.refresh(company)
     return success_response(CompanyPublicRead.model_validate(company))
