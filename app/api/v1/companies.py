@@ -74,6 +74,7 @@ async def list_companies(
     category_id: Optional[UUID] = Query(None),
     location_area_id: Optional[UUID] = Query(None),
     created_by: Optional[UUID] = Query(None),
+    created_by_is_null: Optional[bool] = Query(None),
     email: Optional[str] = Query(None),
     contact_number: Optional[str] = Query(None),
     verification_status: Optional[bool] = Query(None),
@@ -93,6 +94,12 @@ async def list_companies(
         selectinload(Company.payments),
     )
     filters = []
+
+    if created_by is not None and created_by_is_null is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Use either created_by or created_by_is_null, not both",
+        )
 
     if is_active is not None:
         filters.append(Company.is_active.is_(is_active))
@@ -115,6 +122,10 @@ async def list_companies(
         filters.append(Company.location_area_id == location_area_id)
     if created_by is not None:
         filters.append(Company.created_by == created_by)
+    if created_by_is_null is True:
+        filters.append(Company.created_by.is_(None))
+    if created_by_is_null is False:
+        filters.append(Company.created_by.is_not(None))
     if email:
         filters.append(Company.email.ilike(email.strip()))
     if contact_number:
@@ -228,6 +239,29 @@ async def get_company(
     if not company or not company.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return success_response(CompanyRead.model_validate(company))
+
+
+@router.post("/{company_id}/claim", response_model=APIResponse[CompanyRead])
+async def claim_company(
+    company_id: UUID,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[CompanyRead]:
+    company = await session.get(Company, company_id)
+    if not company or not company.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+
+    if getattr(company, "created_by", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Company is already claimed",
+        )
+
+    company.created_by = current_user.id
+    await session.commit()
+
+    company_for_read = await _get_company_for_read(session, company.id)
+    return success_response(CompanyRead.model_validate(company_for_read))
 
 
 @router.put("/{company_id}", response_model=APIResponse[CompanyRead])

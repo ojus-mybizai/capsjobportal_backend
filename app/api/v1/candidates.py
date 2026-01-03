@@ -17,7 +17,7 @@ from app.models.candidate import (
     CandidateStatus,
     ExperienceLevel,
     Gender,
-    CourseStructureFee,
+    JocStructureFee,
 )
 from app.models.interview import Interview
 from app.models.job import Job, JobStatus
@@ -101,6 +101,8 @@ async def list_candidates(
     q: Optional[str] = Query(None, description="Search in name, email, mobile"),
     email: Optional[str] = Query(None),
     mobile_number: Optional[str] = Query(None),
+    created_by: Optional[UUID] = Query(None),
+    created_by_is_null: Optional[bool] = Query(None),
     status_filter: Optional[CandidateStatus] = Query(None, alias="status"),
     employment_status: Optional[CandidateEmploymentStatus] = Query(None),
     qualification: Optional[str] = Query(None),
@@ -127,8 +129,20 @@ async def list_candidates(
     )
     filters = []
 
+    if created_by is not None and created_by_is_null is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Use either created_by or created_by_is_null, not both",
+        )
+
     if is_active is not None:
         filters.append(Candidate.is_active.is_(is_active))
+    if created_by is not None:
+        filters.append(Candidate.created_by == created_by)
+    if created_by_is_null is True:
+        filters.append(Candidate.created_by.is_(None))
+    if created_by_is_null is False:
+        filters.append(Candidate.created_by.is_not(None))
     if status_filter is not None:
         filters.append(Candidate.status == status_filter.value)
     if employment_status is not None:
@@ -348,12 +362,12 @@ async def create_candidate(
     if isinstance(status_value, CandidateStatus):
         payload["status"] = status_value.value
 
-    fee_payload = body.fee_structure if body.status == CandidateStatus.COURSE else None
-    if body.status == CandidateStatus.COURSE and fee_payload is None:
+    fee_payload = body.fee_structure if body.status == CandidateStatus.JOC else None
+    if body.status == CandidateStatus.JOC and fee_payload is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fee_structure is required")
 
-    pay_payload = body.initial_payment if body.status in {CandidateStatus.REGISTERED, CandidateStatus.COURSE} else None
-    if body.status in {CandidateStatus.REGISTERED, CandidateStatus.COURSE} and pay_payload is None:
+    pay_payload = body.initial_payment if body.status in {CandidateStatus.REGISTERED, CandidateStatus.JOC} else None
+    if body.status in {CandidateStatus.REGISTERED, CandidateStatus.JOC} and pay_payload is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="initial_payment is required")
 
     # Compute age if dob provided
@@ -362,7 +376,7 @@ async def create_candidate(
         today = date.today()
         payload["age"] = int((today - dob_value).days // 365)
 
-    candidate = Candidate(**payload, is_active=True)
+    candidate = Candidate(**payload, is_active=True, created_by=current_user.id)
     session.add(candidate)
 
     try:
@@ -370,7 +384,7 @@ async def create_candidate(
 
         if fee_payload is not None:
             total_fee = int(fee_payload.total_fee)
-            fee_row = CourseStructureFee(
+            fee_row = JocStructureFee(
                 candidate_id=candidate.id,
                 total_fee=total_fee,
                 balance=total_fee,
@@ -448,6 +462,51 @@ async def get_candidate(
     return success_response(payload)
 
 
+@router.post("/{candidate_id}/claim", response_model=APIResponse[CandidateRead])
+async def claim_candidate(
+    candidate_id: UUID,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[CandidateRead]:
+    stmt = (
+        select(Candidate)
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
+        .where(Candidate.id == candidate_id)
+    )
+    res = await session.execute(stmt)
+    candidate = res.scalar_one_or_none()
+    if candidate is None or not candidate.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    if getattr(candidate, "created_by", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Candidate is already claimed",
+        )
+
+    candidate.created_by = current_user.id
+    await session.commit()
+
+    refreshed = await session.get(
+        Candidate,
+        candidate_id,
+        options=(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        ),
+    )
+    if refreshed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    payload = await _hydrate_candidate_with_names(session, refreshed)
+    return success_response(payload)
+
+
 @router.put("/{candidate_id}", response_model=APIResponse[CandidateRead])
 async def update_candidate(
     candidate_id: UUID,
@@ -487,11 +546,11 @@ async def update_candidate(
 
     effective_status = CandidateStatus(candidate.status)
 
-    if effective_status in {CandidateStatus.FREE}:
+    if effective_status in {CandidateStatus.FREE, CandidateStatus.CAPS}:
         if body.fee_structure is not None or body.initial_payment is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="fee_structure and initial_payment are not allowed for FREE",
+                detail="fee_structure and initial_payment are not allowed for FREE/CAPS",
             )
 
     if effective_status == CandidateStatus.REGISTERED:
@@ -510,12 +569,12 @@ async def update_candidate(
             )
             session.add(payment)
 
-    if effective_status == CandidateStatus.COURSE:
+    if effective_status == CandidateStatus.JOC:
         print("here")
         if body.fee_structure is not None:
             print(body.fee_structure)
             if candidate.fee_structure is None:
-                fee_row = CourseStructureFee(
+                fee_row = JocStructureFee(
                     candidate_id=candidate.id,
                     total_fee=int(body.fee_structure.total_fee),
                     balance=int(body.fee_structure.total_fee),
@@ -652,11 +711,11 @@ async def update_candidate_status(
     candidate.status = body.status.value
 
     # Handle fee structure and payments based on status
-    if body.status in {CandidateStatus.FREE}:
+    if body.status in {CandidateStatus.FREE, CandidateStatus.CAPS}:
         if body.fee_structure is not None or body.initial_payment is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="fee_structure and initial_payment are not allowed for FREE",
+                detail="fee_structure and initial_payment are not allowed for FREE/CAPS",
             )
 
     if body.status == CandidateStatus.REGISTERED:
@@ -675,12 +734,12 @@ async def update_candidate_status(
             )
             session.add(payment)
 
-    if body.status == CandidateStatus.COURSE:
+    if body.status == CandidateStatus.JOC:
         if body.fee_structure is not None:
             # Calculate initial balance considering initial payment
             initial_payment_amount = int(body.initial_payment.amount) if body.initial_payment is not None else 0
             if candidate.fee_structure is None:
-                fee_row = CourseStructureFee(
+                fee_row = JocStructureFee(
                     candidate_id=candidate.id,
                     total_fee=int(body.fee_structure.total_fee),
                     balance=max(int(body.fee_structure.total_fee) - initial_payment_amount, 0),
@@ -718,6 +777,34 @@ async def update_candidate_status(
 
     await session.refresh(candidate)
     hydrated = await _hydrate_candidate_with_names(session, candidate)
+    return success_response(hydrated)
+
+
+@router.delete("/{candidate_id}", response_model=APIResponse[CandidateRead])
+async def delete_candidate(
+    candidate_id: UUID,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin"])),
+) -> APIResponse[CandidateRead]:
+    candidate = await session.get(Candidate, candidate_id)
+    if candidate is None or not candidate.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    candidate.is_active = False
+    await session.commit()
+
+    stmt = (
+        select(Candidate)
+        .options(
+            joinedload(Candidate.location_area),
+            selectinload(Candidate.fee_structure),
+            selectinload(Candidate.payments),
+        )
+        .where(Candidate.id == candidate_id)
+    )
+    res = await session.execute(stmt)
+    candidate_with_rels = res.scalar_one()
+    hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
     return success_response(hydrated)
 
 

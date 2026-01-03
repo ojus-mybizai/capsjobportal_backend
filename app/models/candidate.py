@@ -25,7 +25,8 @@ from app.models.master import MasterLocation
 
 class CandidateStatus(str, enum.Enum):
     REGISTERED = "REGISTERED"
-    COURSE = "COURSE"
+    JOC = "JOC"
+    CAPS = "CAPS"
     FREE = "FREE"
 
 
@@ -55,6 +56,7 @@ class Candidate(TimestampMixin, Base):
         UniqueConstraint("email", name="uq_candidates_email"),
         UniqueConstraint("mobile_number", name="uq_candidates_mobile_number"),
         Index("ix_candidates_location_area_id", "location_area_id"),
+        Index("ix_candidates_created_by", "created_by"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
@@ -69,6 +71,9 @@ class Candidate(TimestampMixin, Base):
     dob: Mapped[date | None] = mapped_column(Date, nullable=True)
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id"), nullable=True
+    )
     location_area_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("master_location.id"), nullable=True
     )
@@ -91,8 +96,8 @@ class Candidate(TimestampMixin, Base):
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    fee_structure: Mapped["CourseStructureFee"] = relationship(
-        "CourseStructureFee",
+    fee_structure: Mapped["JocStructureFee"] = relationship(
+        "JocStructureFee",
         back_populates="candidate",
         uselist=False,
         cascade="all, delete-orphan",
@@ -114,8 +119,8 @@ class Candidate(TimestampMixin, Base):
             return None
         return self.location_area.name
 
-class CourseStructureFee(TimestampMixin, Base):
-    __tablename__ = "course_structure_fees"
+class JocStructureFee(TimestampMixin, Base):
+    __tablename__ = "joc_structure_fees"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     candidate_id: Mapped[uuid.UUID] = mapped_column(
