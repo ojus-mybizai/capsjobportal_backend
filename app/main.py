@@ -55,26 +55,41 @@ app.mount(
 
 
 @app.on_event("startup")
-async def init_initial_superuser() -> None:
-    """Create an initial admin user if none exists and settings are provided."""
-    if not settings.FIRST_SUPERUSER_EMAIL or not settings.FIRST_SUPERUSER_PASSWORD:
-        logger.info("Initial superuser bootstrap skipped")
-        return
+async def init_default_users() -> None:
+    """Create default users on application startup if they don't exist."""
+    default_users = [
+        {
+            "email": "caps.infotech@gmail.com",
+            "full_name": "Admin User",
+            "password": "Caps@2024",
+            "role": UserRole.admin.value,
+        },
+        {
+            "email": "capstally.in@gmail.com",
+            "full_name": "Recruiter User",
+            "password": "Caps@2024",
+            "role": UserRole.recruiter.value,
+        },
+    ]
 
     async with AsyncSessionLocal() as session:
-        existing = await get_user_by_email(session, settings.FIRST_SUPERUSER_EMAIL)
-        if existing:
-            logger.info("Initial superuser already exists")
-            return
+        for user_data in default_users:
+            existing = await get_user_by_email(session, user_data["email"])
+            if existing:
+                logger.info(f"User {user_data['email']} already exists, skipping creation")
+                continue
 
-        user_in = UserCreate(
-            email=settings.FIRST_SUPERUSER_EMAIL,
-            full_name=settings.FIRST_SUPERUSER_FULL_NAME or "Admin User",
-            password=settings.FIRST_SUPERUSER_PASSWORD,
-            role=UserRole.admin.value,
-        )
-        logger.info("Creating initial superuser")
-        await create_user(session, user_in)
+            user_in = UserCreate(
+                email=user_data["email"],
+                full_name=user_data["full_name"],
+                password=user_data["password"],
+                role=user_data["role"],
+            )
+            try:
+                await create_user(session, user_in)
+                logger.info(f"Created default user: {user_data['email']} with role {user_data['role']}")
+            except Exception as e:
+                logger.error(f"Failed to create user {user_data['email']}: {e}")
 
 # Routers
 app.include_router(health_routes.router, prefix=settings.API_V1_STR)

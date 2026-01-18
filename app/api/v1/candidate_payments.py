@@ -146,13 +146,12 @@ async def delete_candidate_payment(
     if not payment or not payment.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate payment not found")
 
-    candidate = await session.get(Candidate, payment.candidate_id)
-    if not candidate or not candidate.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
-
     payment.is_active = False
 
-    await _recompute_joc_fee_balance(session, candidate)
+    # Only recompute balance if candidate still exists (may have been deleted)
+    candidate = await session.get(Candidate, payment.candidate_id)
+    if candidate:
+        await _recompute_joc_fee_balance(session, candidate)
 
     await session.commit()
     await session.refresh(payment)

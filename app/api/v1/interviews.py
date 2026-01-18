@@ -249,12 +249,6 @@ async def update_interview_status(
                 detail="doj and salary are required when status is JOINED",
             )
 
-        if body.placement_total_receivable is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="placement_total_receivable is required when status is JOINED",
-            )
-
         if candidate.employment_status == CandidateEmploymentStatus.EMPLOYED.value:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -296,6 +290,7 @@ async def update_interview_status(
         )
         session.add(joined_row)
 
+        # Check if placement income exists for this interview (but don't create it here)
         existing_income_stmt = select(PlacementIncome).where(
             and_(
                 PlacementIncome.is_active.is_(True),
@@ -304,23 +299,7 @@ async def update_interview_status(
         )
         existing_income_res = await session.execute(existing_income_stmt)
         existing_income = existing_income_res.scalars().first()
-        if existing_income is None:
-            due_date = body.placement_due_date or body.doj
-            income = PlacementIncome(
-                interview_id=interview.id,
-                candidate_id=interview.candidate_id,
-                job_id=interview.job_id,
-                total_receivable=int(body.placement_total_receivable),
-                total_received=0,
-                balance=int(body.placement_total_receivable),
-                due_date=due_date,
-                remarks=body.placement_remarks,
-                is_active=True,
-            )
-            session.add(income)
-            await session.flush()
-            placement_income_id = income.id
-        else:
+        if existing_income:
             placement_income_id = existing_income.id
 
         job.num_vacancies = max(0, int(job.num_vacancies or 0) - 1)
@@ -343,7 +322,7 @@ async def update_interview_status(
 async def delete_interview(
     interview_id: UUID,
     session: AsyncSession = Depends(deps.get_db_session),
-    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+    current_user: User = Depends(deps.require_role(["admin"])),
 ) -> APIResponse[InterviewRead]:
     stmt = (
         select(Interview)

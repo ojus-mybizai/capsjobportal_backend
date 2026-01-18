@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional , List, Union
 from datetime import datetime
 from uuid import UUID
 
@@ -13,7 +13,7 @@ from app.core.response import APIResponse, success_response
 from app.models.company import Company, CompanyPayment
 from app.models.master import MasterCompanyCategory, MasterLocation
 from app.models.user import User
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import OptionItem, PaginatedResponse
 from app.schemas.company import (
     CompanyCreate,
     CompanyPaymentCreate,
@@ -176,6 +176,35 @@ async def list_companies(
 
     data = PaginatedResponse[CompanyRead](items=items, total=total, page=page, limit=limit)
     return success_response(data)
+
+
+@router.get("/options", response_model=APIResponse[List[OptionItem]])
+async def list_company_options(
+    q: Optional[str] = Query(None, description="Search in name and contact_person"),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[List[OptionItem]]:
+    """Lightweight endpoint for dropdown options - returns only id and name"""
+    stmt = select(Company.id, Company.name).where(Company.is_active.is_(True))
+    
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Company.name.ilike(like),
+                Company.contact_person.ilike(like),
+            )
+        )
+    
+    stmt = stmt.limit(limit).order_by(Company.name)
+    result = await session.execute(stmt)
+    
+    items = [
+        OptionItem(id=row[0], name=row[1] or f"Company #{row[0]}")
+        for row in result.all()
+    ]
+    return success_response(items)
 
 
 @router.post("/", response_model=APIResponse[CompanyRead])

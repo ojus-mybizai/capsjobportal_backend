@@ -1,5 +1,7 @@
 from typing import Generic, List, TypeVar
+from uuid import UUID
 
+from pydantic import BaseModel
 from pydantic.generics import GenericModel
 
 
@@ -11,3 +13,12 @@ class PaginatedResponse(GenericModel, Generic[T]):
     total: int
     page: int
     limit: int
+
+
+class OptionItem(BaseModel):
+    """Lightweight schema for dropdown options - only id and name"""
+    id: UUID
+    name: str
+
+    class Config:
+        from_attributes = True

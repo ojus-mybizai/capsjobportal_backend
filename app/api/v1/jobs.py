@@ -1,6 +1,7 @@
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
+import asyncio
 
 from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Query, UploadFile, status
 from sqlalchemy import String, and_, cast, func, or_, select
@@ -15,7 +16,7 @@ from app.models.interview import Interview
 from app.models.job import Job, JobStatus, JobType, Gender, Joined_candidates
 from app.models.master import MasterDegree, MasterEducation, MasterJobCategory, MasterSkill, MasterLocation
 from app.models.user import User
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import OptionItem, PaginatedResponse
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate, RelatedCandidateItem
 from app.services.file_service import FileService
 
@@ -150,13 +151,21 @@ async def list_job_related_candidates(
 
 
 async def _hydrate_job_with_names(session: AsyncSession, job: Job) -> JobRead:
-    category_map = await _fetch_name_map(session, MasterJobCategory, set(_as_uuid_list(job.job_categories)))
-    skill_map = await _fetch_name_map(session, MasterSkill, set(_as_uuid_list(job.skills)))
-    education_map = await _fetch_name_map(session, MasterEducation, set(_as_uuid_list(job.education)))
-    degree_map = await _fetch_name_map(session, MasterDegree, set(_as_uuid_list(job.degree)))
-    location_map = await _fetch_name_map(
-        session, MasterLocation, {job.location_area_id} if job.location_area_id else set()
+    # Fetch all master maps in parallel for better performance
+    category_ids = set(_as_uuid_list(job.job_categories))
+    skill_ids = set(_as_uuid_list(job.skills))
+    education_ids = set(_as_uuid_list(job.education))
+    degree_ids = set(_as_uuid_list(job.degree))
+    location_ids = {job.location_area_id} if job.location_area_id else set()
+    
+    category_map, skill_map, education_map, degree_map, location_map = await asyncio.gather(
+        _fetch_name_map(session, MasterJobCategory, category_ids),
+        _fetch_name_map(session, MasterSkill, skill_ids),
+        _fetch_name_map(session, MasterEducation, education_ids),
+        _fetch_name_map(session, MasterDegree, degree_ids),
+        _fetch_name_map(session, MasterLocation, location_ids),
     )
+    
     payload = JobRead.model_validate(job)
     payload.job_category_names = [category_map.get(x) for x in _as_uuid_list(job.job_categories) if category_map.get(x)]
     payload.skill_names = [skill_map.get(x) for x in _as_uuid_list(job.skills) if skill_map.get(x)]
@@ -272,12 +281,15 @@ async def list_jobs(
         education_ids.update(_as_uuid_list(job.education))
         degree_ids.update(_as_uuid_list(job.degree))
 
-    category_map = await _fetch_name_map(session, MasterJobCategory, category_ids)
-    skill_map = await _fetch_name_map(session, MasterSkill, skill_ids)
-    education_map = await _fetch_name_map(session, MasterEducation, education_ids)
-    degree_map = await _fetch_name_map(session, MasterDegree, degree_ids)
+    # Fetch all master maps in parallel for better performance
     location_ids = {job.location_area_id for job in jobs if job.location_area_id}
-    location_map = await _fetch_name_map(session, MasterLocation, set(location_ids))
+    category_map, skill_map, education_map, degree_map, location_map = await asyncio.gather(
+        _fetch_name_map(session, MasterJobCategory, category_ids),
+        _fetch_name_map(session, MasterSkill, skill_ids),
+        _fetch_name_map(session, MasterEducation, education_ids),
+        _fetch_name_map(session, MasterDegree, degree_ids),
+        _fetch_name_map(session, MasterLocation, set(location_ids)),
+    )
 
     items: list[JobRead] = []
     for job in jobs:
@@ -311,6 +323,34 @@ async def list_jobs(
 
     data = PaginatedResponse[JobRead](items=items, total=total, page=page, limit=limit)
     return success_response(data)
+
+
+@router.get("/options", response_model=APIResponse[List[OptionItem]])
+async def list_job_options(
+    q: Optional[str] = Query(None, description="Search in title and description"),
+    company_id: Optional[UUID] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[List[OptionItem]]:
+    """Lightweight endpoint for dropdown options - returns only id and title"""
+    stmt = select(Job.id, Job.title).where(Job.is_active.is_(True))
+    
+    if company_id:
+        stmt = stmt.where(Job.company_id == company_id)
+    
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(Job.title.ilike(like))
+    
+    stmt = stmt.limit(limit).order_by(Job.title)
+    result = await session.execute(stmt)
+    
+    items = [
+        OptionItem(id=row[0], name=row[1] or f"Job #{row[0]}")
+        for row in result.all()
+    ]
+    return success_response(items)
 
 
 @router.post("/", response_model=APIResponse[JobRead])
@@ -374,11 +414,22 @@ async def get_job(
     if job is None or not job.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
-    category_map = await _fetch_name_map(session, MasterJobCategory, set(_as_uuid_list(job.job_categories)))
-    skill_map = await _fetch_name_map(session, MasterSkill, set(_as_uuid_list(job.skills)))
-    education_map = await _fetch_name_map(session, MasterEducation, set(_as_uuid_list(job.education)))
-    degree_map = await _fetch_name_map(session, MasterDegree, set(_as_uuid_list(job.degree)))
-    location_map = await _fetch_name_map(session, MasterLocation, {job.location_area_id} if job.location_area_id else set())
+    # Fetch all master maps in parallel for better performance
+    import asyncio
+    
+    category_ids = set(_as_uuid_list(job.job_categories))
+    skill_ids = set(_as_uuid_list(job.skills))
+    education_ids = set(_as_uuid_list(job.education))
+    degree_ids = set(_as_uuid_list(job.degree))
+    location_ids = {job.location_area_id} if job.location_area_id else set()
+    
+    category_map, skill_map, education_map, degree_map, location_map = await asyncio.gather(
+        _fetch_name_map(session, MasterJobCategory, category_ids),
+        _fetch_name_map(session, MasterSkill, skill_ids),
+        _fetch_name_map(session, MasterEducation, education_ids),
+        _fetch_name_map(session, MasterDegree, degree_ids),
+        _fetch_name_map(session, MasterLocation, location_ids),
+    )
 
     count_stmt = select(func.count()).select_from(Interview).where(
         and_(Interview.is_active.is_(True), Interview.job_id == job_id)
@@ -449,44 +500,6 @@ async def update_job(
     return success_response(hydrated)
 
 
-@router.patch("/{job_id}/status", response_model=APIResponse[JobRead])
-async def update_job_status(
-    job_id: UUID,
-    body: JobStatusUpdate,
-    session: AsyncSession = Depends(deps.get_db_session),
-    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
-) -> APIResponse[JobRead]:
-    stmt = (
-        select(Job)
-        .options(
-            joinedload(Job.company),
-            joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
-            joinedload(Job.location_area),
-        )
-        .where(Job.id == job_id)
-    )
-    result = (await session.execute(stmt)).unique()
-    job = result.scalar_one_or_none()
-    if job is None or not job.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-
-    job.status = body.status.value
-    await session.commit()
-    stmt = (
-        select(Job)
-        .options(
-            joinedload(Job.company),
-            joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
-            joinedload(Job.location_area),
-        )
-        .where(Job.id == job_id)
-    )
-    result = (await session.execute(stmt)).unique()
-    job_with_rels = result.scalar_one()
-    hydrated = await _hydrate_job_with_names(session, job_with_rels)
-    return success_response(hydrated)
-
-
 @router.post("/{job_id}/attachments", response_model=APIResponse[JobRead])
 async def upload_job_attachments(
     job_id: UUID,
@@ -530,4 +543,49 @@ async def upload_job_attachments(
     result = (await session.execute(stmt)).unique()
     job_with_rels = result.scalar_one()
     hydrated = await _hydrate_job_with_names(session, job_with_rels)
+    return success_response(hydrated)
+
+
+@router.delete("/{job_id}", response_model=APIResponse[JobRead])
+async def delete_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin"])),
+) -> APIResponse[JobRead]:
+    """Delete a job. Only allowed if no interviews exist for the job. Admin only."""
+    stmt = (
+        select(Job)
+        .options(
+            joinedload(Job.company),
+            joinedload(Job.joined_candidates).joinedload(Joined_candidates.candidate),
+            joinedload(Job.location_area),
+        )
+        .where(Job.id == job_id)
+    )
+    result = (await session.execute(stmt)).unique()
+    job = result.scalar_one_or_none()
+    
+    if job is None or not job.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    # Check if there are any active interviews for this job
+    interview_count_stmt = select(func.count()).select_from(Interview).where(
+        and_(Interview.is_active.is_(True), Interview.job_id == job_id)
+    )
+    interview_count_result = await session.execute(interview_count_stmt)
+    interview_count = int(interview_count_result.scalar_one() or 0)
+
+    if interview_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete job: interviews exist",
+        )
+
+    # Soft delete the job
+    job.is_active = False
+    await session.commit()
+    await session.refresh(job)
+
+    # Hydrate the job with master data names for response
+    hydrated = await _hydrate_job_with_names(session, job)
     return success_response(hydrated)

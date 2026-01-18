@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
@@ -26,6 +27,26 @@ from app.schemas.placement_income_payment import (
 
 
 router = APIRouter(prefix="/placement-incomes", tags=["placement_incomes"])
+
+
+def _hydrate_placement_income(income: PlacementIncome) -> PlacementIncomeRead:
+    """Hydrate placement income with related entity names"""
+    payload = PlacementIncomeRead.model_validate(income)
+    
+    # Get candidate name
+    candidate = getattr(income, "candidate", None)
+    payload.candidate_name = getattr(candidate, "full_name", None) if candidate else None
+    
+    # Get job title
+    job = getattr(income, "job", None)
+    payload.job_title = getattr(job, "title", None) if job else None
+    
+    # Get company name via job relationship
+    if job:
+        company = getattr(job, "company", None)
+        payload.company_name = getattr(company, "name", None) if company else None
+    
+    return payload
 
 
 async def _recompute_placement_income_totals(session: AsyncSession, income: PlacementIncome) -> None:
@@ -98,13 +119,24 @@ async def list_placement_incomes(
     if job_id is not None:
         filters.append(PlacementIncome.job_id == job_id)
 
-    stmt = select(PlacementIncome).where(and_(*filters)).order_by(PlacementIncome.created_at.desc())
-    stmt = stmt.limit(limit).offset((page - 1) * limit)
+    # Use joinedload to fetch related entities in a single query
+    stmt = (
+        select(PlacementIncome)
+        .options(
+            joinedload(PlacementIncome.candidate),
+            joinedload(PlacementIncome.job).joinedload(Job.company),  # Load job and its company
+        )
+        .where(and_(*filters))
+        .order_by(PlacementIncome.created_at.desc())
+        .limit(limit)
+        .offset((page - 1) * limit)
+    )
 
     total_stmt = select(func.count()).select_from(PlacementIncome).where(and_(*filters))
 
     res = await session.execute(stmt)
-    items = [PlacementIncomeRead.model_validate(x) for x in res.scalars().all()]
+    # Use unique() to handle joinedload relationships properly
+    items = [_hydrate_placement_income(x) for x in res.unique().scalars().all()]
 
     total_res = await session.execute(total_stmt)
     total = int(total_res.scalar_one() or 0)
@@ -118,10 +150,19 @@ async def get_placement_income(
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
 ) -> APIResponse[PlacementIncomeRead]:
-    income = await session.get(PlacementIncome, income_id)
+    stmt = (
+        select(PlacementIncome)
+        .options(
+            joinedload(PlacementIncome.candidate),
+            joinedload(PlacementIncome.job).joinedload(Job.company),  # Load job and its company
+        )
+        .where(PlacementIncome.id == income_id)
+    )
+    res = await session.execute(stmt)
+    income = res.unique().scalar_one_or_none()
     if not income or not income.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Placement income not found")
-    return success_response(PlacementIncomeRead.model_validate(income))
+    return success_response(_hydrate_placement_income(income))
 
 
 @router.put("/{income_id}", response_model=APIResponse[PlacementIncomeRead])
@@ -263,13 +304,12 @@ async def delete_placement_income_payment(
     if not payment or not payment.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Placement income payment not found")
 
-    income = await session.get(PlacementIncome, payment.placement_income_id)
-    if not income or not income.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Placement income not found")
-
     payment.is_active = False
 
-    await _recompute_placement_income_totals(session, income)
+    # Only recompute totals if placement income still exists (may have been deleted)
+    income = await session.get(PlacementIncome, payment.placement_income_id)
+    if income:
+        await _recompute_placement_income_totals(session, income)
 
     await session.commit()
     await session.refresh(payment)

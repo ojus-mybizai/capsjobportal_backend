@@ -17,6 +17,8 @@ from app.models.placement_income import PlacementIncome, PlacementIncomePayment
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
 from app.schemas.company import CompanyPaymentCreate, CompanyPaymentRead
+from app.schemas.candidate_payment import CandidatePaymentRead
+from app.schemas.placement_income_payment import PlacementIncomePaymentRead
 from app.schemas.payment_ledger import PaymentLedgerItem, PaymentDueItem, PaymentDueSummary
 
 

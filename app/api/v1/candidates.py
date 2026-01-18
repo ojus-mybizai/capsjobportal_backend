@@ -25,7 +25,7 @@ from app.models.company import Company
 from app.models.user import User
 from app.models.master import MasterSkill, MasterEducation, MasterDegree, MasterLocation
 from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate, CandidateStatusChange
-from app.schemas.common import PaginatedResponse
+from app.schemas.common import OptionItem, PaginatedResponse
 from app.schemas.report_interviews import CandidateJobsReportItem
 from app.schemas.job import RelatedJobItem
 from app.services.file_service import FileService
@@ -84,9 +84,13 @@ def _as_uuid_list(value: Optional[list | dict]) -> list[UUID]:
 
 
 async def _hydrate_candidate_with_names(session: AsyncSession, candidate: Candidate) -> CandidateRead:
-    skills_names = await _master_names_by_ids(session, MasterSkill, candidate.skills)
-    education_names = await _master_names_by_ids(session, MasterEducation, candidate.education)
-    degree_names = await _master_names_by_ids(session, MasterDegree, candidate.degree)
+    # Fetch all master names in parallel for better performance
+    from asyncio import gather
+    skills_names, education_names, degree_names = await gather(
+        _master_names_by_ids(session, MasterSkill, candidate.skills),
+        _master_names_by_ids(session, MasterEducation, candidate.education),
+        _master_names_by_ids(session, MasterDegree, candidate.degree),
+    )
     payload = CandidateRead.model_validate(candidate)
     payload.skills_names = skills_names
     payload.education_names = education_names
@@ -244,6 +248,36 @@ async def list_candidates(
 
     data = PaginatedResponse[CandidateRead](items=items, total=total, page=page, limit=limit)
     return success_response(data)
+
+
+@router.get("/options", response_model=APIResponse[List[OptionItem]])
+async def list_candidate_options(
+    q: Optional[str] = Query(None, description="Search in name, email, mobile"),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> APIResponse[List[OptionItem]]:
+    """Lightweight endpoint for dropdown options - returns only id and name"""
+    stmt = select(Candidate.id, Candidate.full_name).where(Candidate.is_active.is_(True))
+    
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Candidate.full_name.ilike(like),
+                Candidate.email.ilike(like),
+                Candidate.mobile_number.ilike(like),
+            )
+        )
+    
+    stmt = stmt.limit(limit).order_by(Candidate.full_name)
+    result = await session.execute(stmt)
+    
+    items = [
+        OptionItem(id=row[0], name=row[1] or f"Candidate #{row[0]}")
+        for row in result.all()
+    ]
+    return success_response(items)
 
 
 @router.get(

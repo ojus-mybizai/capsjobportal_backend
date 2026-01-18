@@ -35,6 +35,11 @@ class PlacementIncomeRead(PlacementIncomeBase):
     created_at: datetime
     updated_at: datetime
 
+    # Optional fields for display - hydrated from related entities
+    candidate_name: Optional[str] = None
+    job_title: Optional[str] = None
+    company_name: Optional[str] = None
+
     payments: list[PlacementIncomePaymentRead] = []
 
     class Config:
