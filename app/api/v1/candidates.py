@@ -24,7 +24,7 @@ from app.models.job import Job, JobStatus
 from app.models.company import Company
 from app.models.user import User
 from app.models.master import MasterSkill, MasterEducation, MasterDegree, MasterLocation
-from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate, CandidateStatusChange
+from app.schemas.candidate import CandidateCreate, CandidateRead, CandidateUpdate, CandidateStatusChange, JocStructureFeeRead, JocStructureFeeUpdate
 from app.schemas.common import OptionItem, PaginatedResponse
 from app.schemas.report_interviews import CandidateJobsReportItem
 from app.schemas.job import RelatedJobItem
@@ -824,6 +824,27 @@ async def delete_candidate(
     if candidate is None or not candidate.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
+    # Soft delete all related candidate payments
+    payments_stmt = select(CandidatePayment).where(
+        CandidatePayment.candidate_id == candidate_id,
+        CandidatePayment.is_active.is_(True),
+    )
+    payments_result = await session.execute(payments_stmt)
+    payments = payments_result.scalars().all()
+    for payment in payments:
+        payment.is_active = False
+
+    # Soft delete JOC fee structure if exists
+    joc_fee_stmt = select(JocStructureFee).where(
+        JocStructureFee.candidate_id == candidate_id,
+        JocStructureFee.is_active.is_(True),
+    )
+    joc_fee_result = await session.execute(joc_fee_stmt)
+    joc_fee = joc_fee_result.scalar_one_or_none()
+    if joc_fee:
+        joc_fee.is_active = False
+
+    # Soft delete the candidate
     candidate.is_active = False
     await session.commit()
 
@@ -840,6 +861,57 @@ async def delete_candidate(
     candidate_with_rels = res.scalar_one()
     hydrated = await _hydrate_candidate_with_names(session, candidate_with_rels)
     return success_response(hydrated)
+
+
+@router.put("/joc-fees/{fee_id}", response_model=APIResponse[JocStructureFeeRead])
+async def update_joc_fee(
+    fee_id: UUID,
+    body: JocStructureFeeUpdate,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[JocStructureFeeRead]:
+    """Update a JOC fee structure. Balance will be recalculated based on payments."""
+    fee = await session.get(JocStructureFee, fee_id)
+    if not fee or not fee.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JOC fee not found")
+
+    # Update fee structure
+    fee.total_fee = int(body.total_fee)
+    if body.due_date is not None:
+        fee.due_date = body.due_date
+
+    # Recalculate balance based on existing payments
+    candidate = await session.get(Candidate, fee.candidate_id)
+    if candidate:
+        # Recompute balance: total_fee - sum of all active payments
+        total_paid_stmt = select(func.coalesce(func.sum(CandidatePayment.amount), 0)).where(
+            CandidatePayment.candidate_id == candidate.id,
+            CandidatePayment.is_active.is_(True),
+        )
+        total_paid_res = await session.execute(total_paid_stmt)
+        total_paid = int(total_paid_res.scalar_one() or 0)
+        fee.balance = max(int(fee.total_fee) - total_paid, 0)
+
+    await session.commit()
+    await session.refresh(fee)
+    return success_response(JocStructureFeeRead.model_validate(fee))
+
+
+@router.delete("/joc-fees/{fee_id}", response_model=APIResponse[JocStructureFeeRead])
+async def delete_joc_fee(
+    fee_id: UUID,
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin"])),
+) -> APIResponse[JocStructureFeeRead]:
+    """Soft delete a JOC fee structure. Admin only."""
+    fee = await session.get(JocStructureFee, fee_id)
+    if not fee or not fee.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JOC fee not found")
+
+    fee.is_active = False
+    await session.commit()
+    await session.refresh(fee)
+    return success_response(JocStructureFeeRead.model_validate(fee))
 
 
 @router.post("/{candidate_id}/upload", response_model=APIResponse[CandidateRead])

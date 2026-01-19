@@ -92,6 +92,10 @@ class JocStructureFeeCreate(JocStructureFeeBase):
     pass
 
 
+class JocStructureFeeUpdate(JocStructureFeeBase):
+    pass
+
+
 class JocStructureFeeRead(JocStructureFeeBase):
     id: UUID
     candidate_id: UUID

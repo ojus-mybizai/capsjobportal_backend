@@ -43,6 +43,7 @@ async def list_pending_dues(
             PlacementIncome.balance,
             PlacementIncome.total_receivable,
             PlacementIncome.total_received,
+            PlacementIncome.due_date,
             PlacementIncome.candidate_id,
             Candidate.full_name.label("candidate_name"),
             Candidate.mobile_number.label("candidate_contact_number"),
@@ -58,6 +59,7 @@ async def list_pending_dues(
             continue
         items.append(
             PaymentDueItem(
+                id=row.id,
                 source="PLACEMENT_INCOME_PENDING",
                 balance=int(row.balance or 0),
                 total_amount=int(row.total_receivable or 0),
@@ -65,6 +67,7 @@ async def list_pending_dues(
                 candidate_name=row.candidate_name,
                 candidate_contact_number=row.candidate_contact_number,
                 total_received=int(row.total_received or 0),
+                due_date=row.due_date,
             )
         )
 
@@ -79,6 +82,7 @@ async def list_pending_dues(
             JocStructureFee.id,
             JocStructureFee.balance,
             JocStructureFee.total_fee,
+            JocStructureFee.due_date,
             JocStructureFee.candidate_id,
             Candidate.full_name.label("candidate_name"),
             Candidate.mobile_number.label("candidate_contact_number"),
@@ -94,6 +98,7 @@ async def list_pending_dues(
             continue
         items.append(
             PaymentDueItem(
+                id=row.id,
                 source="JOC_FEE_PENDING",
                 balance=int(row.balance or 0),
                 total_amount=int(row.total_fee or 0),
@@ -101,6 +106,7 @@ async def list_pending_dues(
                 candidate_name=row.candidate_name,
                 candidate_contact_number=row.candidate_contact_number,
                 total_received=max(int(row.total_fee or 0) - int(row.balance or 0), 0),
+                due_date=row.due_date,
             )
         )
 

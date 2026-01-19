@@ -32,6 +32,7 @@ class PaymentLedgerItem(BaseModel):
 
 
 class PaymentDueItem(BaseModel):
+    id: UUID  # ID of PlacementIncome or JocStructureFee
     source: str  # PLACEMENT_INCOME_PENDING or JOC_FEE_PENDING
     candidate_id: UUID
     candidate_name: str | None = None
@@ -39,6 +40,7 @@ class PaymentDueItem(BaseModel):
     total_amount: int
     balance: int
     total_received: int
+    due_date: datetime | None = None
 
 
 class PaymentDueSummary(BaseModel):
