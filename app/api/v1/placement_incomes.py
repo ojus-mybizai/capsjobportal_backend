@@ -326,6 +326,17 @@ async def delete_placement_income(
     if not income or not income.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Placement income not found")
 
+    # Soft delete all related payments first
+    payments_stmt = select(PlacementIncomePayment).where(
+        PlacementIncomePayment.placement_income_id == income_id,
+        PlacementIncomePayment.is_active.is_(True),
+    )
+    payments_result = await session.execute(payments_stmt)
+    payments = payments_result.scalars().all()
+    for payment in payments:
+        payment.is_active = False
+
+    # Soft delete the placement income
     income.is_active = False
     await session.commit()
     await session.refresh(income)
