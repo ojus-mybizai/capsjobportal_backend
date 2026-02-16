@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import DateOnlySerialized
 from app.schemas.placement_income_payment import PlacementIncomePaymentRead
 
 
@@ -32,8 +33,9 @@ class PlacementIncomeRead(PlacementIncomeBase):
     total_received: int
     balance: int
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    due_date: DateOnlySerialized  # override: output as date only
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
 
     # Optional fields for display - hydrated from related entities
     candidate_name: Optional[str] = None

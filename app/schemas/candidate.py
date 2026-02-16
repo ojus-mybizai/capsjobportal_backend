@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
 
 from app.models.candidate import CandidateEmploymentStatus, CandidateStatus, Gender, ExperienceLevel
 from app.schemas.candidate_payment import CandidatePaymentCreate, CandidatePaymentRead
+from app.schemas.common import DateOnlySerialized
 
 
 class CandidateBase(BaseModel):
@@ -75,6 +76,7 @@ class CandidateUpdate(CandidateBase):
     fee_structure: Optional["JocStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
     age: Optional[int] = None  # ignored if dob provided
+    total_fee: Optional[int] = Field(default=None, ge=0)  # when set, updates JOC fee_structure.total_fee if present
 
 
 class CandidateStatusChange(BaseModel):
@@ -85,7 +87,7 @@ class CandidateStatusChange(BaseModel):
 
 class JocStructureFeeBase(BaseModel):
     total_fee: int = Field(default=0, ge=0)
-    due_date: Optional[datetime] = None
+    due_date: Optional[datetime] = None  # input: datetime or YYYY-MM-DD
 
 
 class JocStructureFeeCreate(JocStructureFeeBase):
@@ -101,8 +103,9 @@ class JocStructureFeeRead(JocStructureFeeBase):
     candidate_id: UUID
     balance: int
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    due_date: Optional[DateOnlySerialized] = None  # override: output as date only
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
 
     class Config:
         from_attributes = True
@@ -125,8 +128,8 @@ class CandidateRead(CandidateBase):
     fee_structure: Optional[JocStructureFeeRead] = None
     payments: Optional[List[CandidatePaymentRead]] = None
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
     age: Optional[int] = None
 
     @computed_field(return_type=Optional[int])

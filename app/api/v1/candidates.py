@@ -562,7 +562,7 @@ async def update_candidate(
     if candidate is None or not candidate.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
 
-    update_data = body.model_dump(exclude_unset=True, exclude={"fee_structure", "initial_payment"})
+    update_data = body.model_dump(exclude_unset=True, exclude={"fee_structure", "initial_payment", "total_fee"})
     incoming_status = update_data.get("status")
     if isinstance(incoming_status, CandidateStatus):
         update_data["status"] = incoming_status.value
@@ -604,9 +604,7 @@ async def update_candidate(
             session.add(payment)
 
     if effective_status == CandidateStatus.JOC:
-        print("here")
         if body.fee_structure is not None:
-            print(body.fee_structure)
             if candidate.fee_structure is None:
                 fee_row = JocStructureFee(
                     candidate_id=candidate.id,
@@ -620,6 +618,15 @@ async def update_candidate(
                 candidate.fee_structure.total_fee = int(body.fee_structure.total_fee)
                 candidate.fee_structure.due_date = body.fee_structure.due_date
                 candidate.fee_structure.balance = int(body.fee_structure.total_fee - body.initial_payment.amount)
+        elif body.total_fee is not None and candidate.fee_structure is not None:
+            # Top-level total_fee update (e.g. from candidate detail "Save total fee")
+            fee = candidate.fee_structure
+            total_fee = int(body.total_fee)
+            fee.total_fee = total_fee
+            total_paid = sum(
+                int(p.amount) for p in (candidate.payments or []) if p.is_active
+            )
+            fee.balance = max(total_fee - total_paid, 0)
         if body.initial_payment is not None:
             payment = CandidatePayment(
                 candidate_id=candidate.id,

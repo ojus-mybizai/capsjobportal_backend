@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.models.interview import InterviewStatus
 from app.models.job import JobStatus
+from app.schemas.common import DateOnlySerialized
 
 
 class JobCandidatesReportItem(BaseModel):
@@ -15,7 +16,7 @@ class JobCandidatesReportItem(BaseModel):
     candidate_phone: Optional[str] = None
     interviews_count: int
     latest_interview_status: Optional[InterviewStatus] = None
-    last_interview_date: Optional[datetime] = None
+    last_interview_date: Optional[DateOnlySerialized] = None
 
 
 class CandidateJobsReportItem(BaseModel):
@@ -26,4 +27,4 @@ class CandidateJobsReportItem(BaseModel):
     job_status: Optional[JobStatus] = None
     interviews_count: int
     latest_interview_status: Optional[InterviewStatus] = None
-    last_interview_date: Optional[datetime] = None
+    last_interview_date: Optional[DateOnlySerialized] = None

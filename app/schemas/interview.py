@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.models.interview import InterviewStatus
+from app.schemas.common import DateOnlySerialized
 
 
 class InterviewBase(BaseModel):
@@ -46,8 +47,9 @@ class InterviewRead(InterviewBase):
     job_title: Optional[str] = None
     candidate_name: Optional[str] = None
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    interview_date: DateOnlySerialized  # override: output as date only
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
 
     class Config:
         from_attributes = True

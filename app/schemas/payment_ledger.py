@@ -3,13 +3,15 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.schemas.common import DateOnlySerialized
+
 
 class PaymentLedgerItem(BaseModel):
     id: UUID
     source: str
-    payment_date: datetime
+    payment_date: DateOnlySerialized
     amount: int
-    created_at: datetime
+    created_at: DateOnlySerialized
     is_active: bool
 
     placement_income_id: UUID | None = None
@@ -40,7 +42,7 @@ class PaymentDueItem(BaseModel):
     total_amount: int
     balance: int
     total_received: int
-    due_date: datetime | None = None
+    due_date: DateOnlySerialized | None = None
 
 
 class PaymentDueSummary(BaseModel):

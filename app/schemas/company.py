@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import AnyUrl, BaseModel, EmailStr, Field, constr, field_validator
 
+from app.schemas.common import DateOnlySerialized
+
 
 class CompanyPaymentBase(BaseModel):
     amount: int = Field(..., gt=0)
@@ -17,6 +19,7 @@ class CompanyPaymentCreate(CompanyPaymentBase):
 
 class CompanyPaymentRead(CompanyPaymentBase):
     id: UUID
+    payment_date: DateOnlySerialized  # output as date only
 
     class Config:
         from_attributes = True
@@ -127,8 +130,8 @@ class CompanyRead(CompanyBase):
     verification_status: bool
     company_status: str
     payments: List[CompanyPaymentRead] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
     is_active: bool
 
     class Config:

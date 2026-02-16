@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, computed_field
 
 from app.models.job import JobStatus, JobType, Gender, ExperienceLevel
+from app.schemas.common import DateOnlySerialized
 
 
 class RelatedJobItem(BaseModel):
@@ -102,18 +103,19 @@ class JoinedCandidateRead(BaseModel):
     id: UUID
     job_id: UUID
     candidate_id: UUID
-    Date_of_joining: datetime
+    Date_of_joining: DateOnlySerialized
     candidate_name: Optional[str] = None
     salary: int
     remarks: Optional[str] = None
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
 
-    @computed_field(return_type=datetime)
+    @computed_field(return_type=str)
     @property
-    def doj(self) -> datetime:
-        return self.Date_of_joining
+    def doj(self) -> str:
+        d = self.Date_of_joining
+        return d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
 
     class Config:
         from_attributes = True
@@ -135,8 +137,8 @@ class JobRead(JobBase):
     degree_names: Optional[List[str]] = None
     location_area_name: Optional[str] = None
     experience_level: Optional[ExperienceLevel] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
 
     class Config:
         from_attributes = True
