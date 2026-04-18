@@ -136,3 +136,27 @@ class CompanyRead(CompanyBase):
 
     class Config:
         from_attributes = True
+
+
+class CompanyListItem(BaseModel):
+    """Lightweight schema for list endpoint - excludes nested payments."""
+
+    id: UUID
+    name: str
+    category_id: Optional[UUID] = None
+    category_name: Optional[str] = None
+    location_area_id: Optional[UUID] = None
+    location_area_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    email: Optional[EmailStr] = None
+    verification_status: bool
+    company_status: str
+    visiting_card_url: Optional[str] = None
+    front_image_url: Optional[str] = None
+    created_at: DateOnlySerialized
+    updated_at: DateOnlySerialized
+    is_active: bool
+
+    class Config:
+        from_attributes = True

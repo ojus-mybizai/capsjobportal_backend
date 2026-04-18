@@ -34,22 +34,6 @@ from app.services.file_service import FileService
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 
-async def _master_names_by_ids(
-    session: AsyncSession,
-    model,
-    ids: Optional[list[str] | list],
-) -> list[str]:
-    if not ids:
-        return []
-    try:
-        id_list = list({UUID(str(i)) for i in ids})
-    except Exception:
-        return []
-    stmt = select(model.name).where(model.id.in_(id_list))
-    res = await session.execute(stmt)
-    return [r[0] for r in res.all() if r[0] is not None]
-
-
 async def _validate_master_ids(session: AsyncSession, model, ids: Optional[list[str] | list]) -> None:
     if not ids:
         return
@@ -83,19 +67,73 @@ def _as_uuid_list(value: Optional[list | dict]) -> list[UUID]:
     return result
 
 
+async def _hydrate_candidates_with_names(
+    session: AsyncSession,
+    candidates: list[Candidate],
+) -> list[CandidateRead]:
+    """Batch-fetch master names for many candidates with 3 queries total
+    (one per master table) instead of 3 per candidate.
+    """
+    if not candidates:
+        return []
+
+    all_skill_ids: set[UUID] = set()
+    all_edu_ids: set[UUID] = set()
+    all_degree_ids: set[UUID] = set()
+
+    def _collect(target: set[UUID], raw_ids):
+        if not raw_ids:
+            return
+        for raw in raw_ids:
+            try:
+                target.add(UUID(str(raw)))
+            except Exception:
+                continue
+
+    for c in candidates:
+        _collect(all_skill_ids, c.skills)
+        _collect(all_edu_ids, c.education)
+        _collect(all_degree_ids, c.degree)
+
+    async def _build_lookup(model, ids: set[UUID]) -> dict[UUID, str]:
+        if not ids:
+            return {}
+        res = await session.execute(
+            select(model.id, model.name).where(model.id.in_(ids))
+        )
+        return {row[0]: row[1] for row in res.all() if row[1] is not None}
+
+    skill_map = await _build_lookup(MasterSkill, all_skill_ids)
+    edu_map = await _build_lookup(MasterEducation, all_edu_ids)
+    degree_map = await _build_lookup(MasterDegree, all_degree_ids)
+
+    def _resolve(raw_ids, lookup: dict[UUID, str]) -> list[str]:
+        if not raw_ids:
+            return []
+        names: list[str] = []
+        for raw in raw_ids:
+            try:
+                key = UUID(str(raw))
+            except Exception:
+                continue
+            name = lookup.get(key)
+            if name is not None:
+                names.append(name)
+        return names
+
+    payloads: list[CandidateRead] = []
+    for c in candidates:
+        payload = CandidateRead.model_validate(c)
+        payload.skills_names = _resolve(c.skills, skill_map)
+        payload.education_names = _resolve(c.education, edu_map)
+        payload.degree_names = _resolve(c.degree, degree_map)
+        payloads.append(payload)
+    return payloads
+
+
 async def _hydrate_candidate_with_names(session: AsyncSession, candidate: Candidate) -> CandidateRead:
-    # Fetch all master names in parallel for better performance
-    from asyncio import gather
-    skills_names, education_names, degree_names = await gather(
-        _master_names_by_ids(session, MasterSkill, candidate.skills),
-        _master_names_by_ids(session, MasterEducation, candidate.education),
-        _master_names_by_ids(session, MasterDegree, candidate.degree),
-    )
-    payload = CandidateRead.model_validate(candidate)
-    payload.skills_names = skills_names
-    payload.education_names = education_names
-    payload.degree_names = degree_names
-    return payload
+    payloads = await _hydrate_candidates_with_names(session, [candidate])
+    return payloads[0]
 
 
 @router.get("/", response_model=APIResponse[PaginatedResponse[CandidateRead]])
@@ -235,13 +273,13 @@ async def list_candidates(
         counts_res = await session.execute(counts_stmt)
         counts_by_candidate = {row[0]: int(row[1] or 0) for row in counts_res.all()}
 
-    items = []
     for obj in candidates:
         if getattr(obj, "employment_status", None) is None:
             obj.employment_status = CandidateEmploymentStatus.UNEMPLOYED.value
-        payload = await _hydrate_candidate_with_names(session, obj)
+
+    items = await _hydrate_candidates_with_names(session, candidates)
+    for obj, payload in zip(candidates, items):
         payload.interviews_count = counts_by_candidate.get(obj.id, 0)
-        items.append(payload)
 
     total_result = await session.execute(total_stmt)
     total = int(total_result.scalar_one() or 0)

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Quer
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, noload, selectinload
 
 from app.api import deps
 from app.core.response import APIResponse, success_response
@@ -16,6 +16,7 @@ from app.models.user import User
 from app.schemas.common import OptionItem, PaginatedResponse
 from app.schemas.company import (
     CompanyCreate,
+    CompanyListItem,
     CompanyPaymentCreate,
     CompanyPaymentRead,
     CompanyRead,
@@ -66,7 +67,7 @@ async def _get_company_for_read(session: AsyncSession, company_id: UUID) -> Comp
     return company
 
 
-@router.get("/", response_model=APIResponse[PaginatedResponse[CompanyRead]])
+@router.get("/", response_model=APIResponse[PaginatedResponse[CompanyListItem]])
 async def list_companies(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -87,11 +88,11 @@ async def list_companies(
     order: str = Query("desc"),
     session: AsyncSession = Depends(deps.get_db_session),
     current_user: User = Depends(deps.get_current_active_user),
-) -> APIResponse[PaginatedResponse[CompanyRead]]:
+) -> APIResponse[PaginatedResponse[CompanyListItem]]:
     stmt = select(Company).options(
         joinedload(Company.category),
         joinedload(Company.location_area),
-        selectinload(Company.payments),
+        noload(Company.payments),
     )
     filters = []
 
@@ -169,12 +170,12 @@ async def list_companies(
 
     result = await session.execute(stmt)
     companies = result.scalars().all()
-    items = [CompanyRead.model_validate(obj) for obj in companies]
+    items = [CompanyListItem.model_validate(obj) for obj in companies]
 
     total_result = await session.execute(total_stmt)
     total = int(total_result.scalar_one() or 0)
 
-    data = PaginatedResponse[CompanyRead](items=items, total=total, page=page, limit=limit)
+    data = PaginatedResponse[CompanyListItem](items=items, total=total, page=page, limit=limit)
     return success_response(data)
 
 

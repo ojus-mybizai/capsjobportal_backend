@@ -14,9 +14,10 @@ from app.models.company import Company, CompanyPayment
 from app.models.interview import Interview, InterviewStatus
 from app.models.job import Job, JobStatus
 from app.models.master import MasterLocation
-from app.models.placement_income import PlacementIncomePayment
+from app.models.placement_income import PlacementIncome, PlacementIncomePayment
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
+from app.schemas.payment_ledger import PaymentDueItem
 from app.schemas.report_interviews import CandidateJobsReportItem, JobCandidatesReportItem
 
 
@@ -568,6 +569,203 @@ async def dashboard_report(
         },
     }
     return success_response(data)
+
+
+@router.get("/dashboard-full", response_model=APIResponse[dict])
+async def dashboard_full(
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    due_before: datetime | None = Query(None, description="Cutoff date for pending dues"),
+    session: AsyncSession = Depends(deps.get_db_session),
+    current_user: User = Depends(deps.require_role(["admin", "recruiter"])),
+) -> APIResponse[dict]:
+    """Combined dashboard summary + pending dues — replaces 2 separate calls.
+
+    Consolidates 8 dashboard SQL queries into 5 (companies and finance each merged
+    into single aggregate queries) and bundles pending-dues in the same response.
+    """
+    from app.models.candidate import JocStructureFee  # local import to avoid cycle
+
+    # ---- Summary section ----
+    companies_filters = [Company.is_active.is_(True)]
+    _apply_date_range(companies_filters, Company.created_at, start_date, end_date)
+    companies_stmt = (
+        select(
+            func.count().label("total"),
+            func.count().filter(Company.company_status == "PAID").label("paid"),
+            func.count().filter(Company.company_status == "FREE").label("free"),
+        )
+        .select_from(Company)
+        .where(*companies_filters)
+    )
+    companies_row = (await session.execute(companies_stmt)).one()
+
+    jobs_filters = [Job.is_active.is_(True)]
+    _apply_date_range(jobs_filters, Job.created_at, start_date, end_date)
+    jobs_status_res = await session.execute(
+        select(Job.status, func.count()).where(*jobs_filters).group_by(Job.status)
+    )
+    jobs_status = {row[0]: int(row[1]) for row in jobs_status_res.all()}
+
+    candidates_filters = [Candidate.is_active.is_(True)]
+    _apply_date_range(candidates_filters, Candidate.created_at, start_date, end_date)
+    candidates_status_res = await session.execute(
+        select(Candidate.status, func.count())
+        .where(*candidates_filters)
+        .group_by(Candidate.status)
+    )
+    candidates_status = {row[0]: int(row[1]) for row in candidates_status_res.all()}
+
+    interviews_filters = [Interview.is_active.is_(True)]
+    _apply_date_range(interviews_filters, Interview.interview_date, start_date, end_date)
+    interviews_status_res = await session.execute(
+        select(Interview.status, func.count())
+        .where(*interviews_filters)
+        .group_by(Interview.status)
+    )
+    interviews_status = {row[0]: int(row[1]) for row in interviews_status_res.all()}
+
+    company_payment_filters: list = []
+    _apply_date_range(company_payment_filters, CompanyPayment.payment_date, start_date, end_date)
+    candidate_payment_filters = [CandidatePayment.is_active.is_(True)]
+    _apply_date_range(candidate_payment_filters, CandidatePayment.payment_date, start_date, end_date)
+    placement_filters = [PlacementIncomePayment.is_active.is_(True)]
+    _apply_date_range(placement_filters, PlacementIncomePayment.paid_date, start_date, end_date)
+
+    cp_subq = select(func.coalesce(func.sum(CompanyPayment.amount), 0))
+    if company_payment_filters:
+        cp_subq = cp_subq.where(*company_payment_filters)
+    cdp_subq = select(func.coalesce(func.sum(CandidatePayment.amount), 0)).where(
+        *candidate_payment_filters
+    )
+    pip_subq = select(func.coalesce(func.sum(PlacementIncomePayment.amount), 0)).where(
+        *placement_filters
+    )
+
+    finance_stmt = select(
+        cp_subq.scalar_subquery().label("company_payments"),
+        cdp_subq.scalar_subquery().label("candidate_payments"),
+        pip_subq.scalar_subquery().label("placement_income"),
+    )
+    finance_row = (await session.execute(finance_stmt)).one()
+    company_payments_total = int(finance_row.company_payments or 0)
+    candidate_payments_total = int(finance_row.candidate_payments or 0)
+    placement_income_total = int(finance_row.placement_income or 0)
+    total_income = company_payments_total + candidate_payments_total + placement_income_total
+
+    summary_data = {
+        "companies": {
+            "total": int(companies_row.total or 0),
+            "paid": int(companies_row.paid or 0),
+            "free": int(companies_row.free or 0),
+        },
+        "jobs": _fill_status_counts(jobs_status, [x.value for x in JobStatus]),
+        "candidates": _fill_status_counts(candidates_status, [x.value for x in CandidateStatus]),
+        "interviews": _fill_status_counts(interviews_status, [x.value for x in InterviewStatus]),
+        "finance": {
+            "company_payments": company_payments_total,
+            "candidate_fees_received": candidate_payments_total,
+            "placement_income": placement_income_total,
+            "total_income": total_income,
+        },
+    }
+
+    # ---- Pending dues section ----
+    pi_filters = [PlacementIncome.is_active.is_(True)]
+    if due_before is not None:
+        pi_filters.append(PlacementIncome.due_date <= due_before)
+    pi_stmt = (
+        select(
+            PlacementIncome.id,
+            PlacementIncome.balance,
+            PlacementIncome.total_receivable,
+            PlacementIncome.total_received,
+            PlacementIncome.due_date,
+            PlacementIncome.candidate_id,
+            Candidate.full_name.label("candidate_name"),
+            Candidate.mobile_number.label("candidate_contact_number"),
+        )
+        .select_from(PlacementIncome)
+        .join(Candidate, Candidate.id == PlacementIncome.candidate_id)
+        .where(*pi_filters)
+        .order_by(PlacementIncome.due_date.asc())
+    )
+    pi_res = await session.execute(pi_stmt)
+
+    items: list[PaymentDueItem] = []
+    placement_due_total = 0
+    for row in pi_res.all():
+        bal = int(row.balance or 0)
+        if bal <= 0:
+            continue
+        placement_due_total += bal
+        items.append(
+            PaymentDueItem(
+                id=row.id,
+                source="PLACEMENT_INCOME_PENDING",
+                balance=bal,
+                total_amount=int(row.total_receivable or 0),
+                candidate_id=row.candidate_id,
+                candidate_name=row.candidate_name,
+                candidate_contact_number=row.candidate_contact_number,
+                total_received=int(row.total_received or 0),
+                due_date=row.due_date,
+            )
+        )
+
+    joc_filters = [JocStructureFee.is_active.is_(True)]
+    if due_before is not None:
+        joc_filters.append(JocStructureFee.due_date <= due_before)
+    joc_stmt = (
+        select(
+            JocStructureFee.id,
+            JocStructureFee.balance,
+            JocStructureFee.total_fee,
+            JocStructureFee.due_date,
+            JocStructureFee.candidate_id,
+            Candidate.full_name.label("candidate_name"),
+            Candidate.mobile_number.label("candidate_contact_number"),
+        )
+        .select_from(JocStructureFee)
+        .join(Candidate, Candidate.id == JocStructureFee.candidate_id)
+        .where(*joc_filters)
+        .order_by(JocStructureFee.due_date.asc())
+    )
+    joc_res = await session.execute(joc_stmt)
+
+    joc_due_total = 0
+    for row in joc_res.all():
+        bal = int(row.balance or 0)
+        if bal <= 0:
+            continue
+        joc_due_total += bal
+        items.append(
+            PaymentDueItem(
+                id=row.id,
+                source="JOC_FEE_PENDING",
+                balance=bal,
+                total_amount=int(row.total_fee or 0),
+                candidate_id=row.candidate_id,
+                candidate_name=row.candidate_name,
+                candidate_contact_number=row.candidate_contact_number,
+                total_received=max(int(row.total_fee or 0) - bal, 0),
+                due_date=row.due_date,
+            )
+        )
+
+    pending_dues_data = {
+        "items": [item.model_dump(mode="json") for item in items],
+        "totals": {
+            "total_due": placement_due_total + joc_due_total,
+            "candidate_due": joc_due_total,
+            "company_due": placement_due_total,
+        },
+    }
+
+    return success_response({
+        "summary": summary_data,
+        "pending_dues": pending_dues_data,
+    })
 
 
 @router.get("/finance/summary", response_model=APIResponse[dict])
