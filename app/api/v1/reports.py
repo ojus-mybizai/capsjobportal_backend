@@ -631,6 +631,8 @@ async def dashboard_full(
     _apply_date_range(candidate_payment_filters, CandidatePayment.payment_date, start_date, end_date)
     placement_filters = [PlacementIncomePayment.is_active.is_(True)]
     _apply_date_range(placement_filters, PlacementIncomePayment.paid_date, start_date, end_date)
+    joc_fee_filters = [JocStructureFee.is_active.is_(True)]
+    _apply_date_range(joc_fee_filters, JocStructureFee.created_at, start_date, end_date)
 
     cp_subq = select(func.coalesce(func.sum(CompanyPayment.amount), 0))
     if company_payment_filters:
@@ -641,17 +643,22 @@ async def dashboard_full(
     pip_subq = select(func.coalesce(func.sum(PlacementIncomePayment.amount), 0)).where(
         *placement_filters
     )
+    joc_subq = select(
+        func.coalesce(func.sum(JocStructureFee.total_fee - JocStructureFee.balance), 0)
+    ).where(*joc_fee_filters)
 
     finance_stmt = select(
-        cp_subq.scalar_subquery().label("company_payments"),
-        cdp_subq.scalar_subquery().label("candidate_payments"),
-        pip_subq.scalar_subquery().label("placement_income"),
+        cp_subq.scalar_subquery().label("company_fee"),
+        cdp_subq.scalar_subquery().label("registration_fee"),
+        pip_subq.scalar_subquery().label("placement_income_fee"),
+        joc_subq.scalar_subquery().label("joc_fee"),
     )
     finance_row = (await session.execute(finance_stmt)).one()
-    company_payments_total = int(finance_row.company_payments or 0)
-    candidate_payments_total = int(finance_row.candidate_payments or 0)
-    placement_income_total = int(finance_row.placement_income or 0)
-    total_income = company_payments_total + candidate_payments_total + placement_income_total
+    company_fee = int(finance_row.company_fee or 0)
+    registration_fee = int(finance_row.registration_fee or 0)
+    placement_income_fee = int(finance_row.placement_income_fee or 0)
+    joc_fee = int(finance_row.joc_fee or 0)
+    total_income = company_fee + registration_fee + placement_income_fee + joc_fee
 
     summary_data = {
         "companies": {
@@ -663,10 +670,11 @@ async def dashboard_full(
         "candidates": _fill_status_counts(candidates_status, [x.value for x in CandidateStatus]),
         "interviews": _fill_status_counts(interviews_status, [x.value for x in InterviewStatus]),
         "finance": {
-            "company_payments": company_payments_total,
-            "candidate_fees_received": candidate_payments_total,
-            "placement_income": placement_income_total,
-            "total_income": total_income,
+            "company_fee": company_fee,
+            "registration_fee": registration_fee,
+            "placement_income_fee": placement_income_fee,
+            "joc_fee": joc_fee,
+            "total": total_income,
         },
     }
 
@@ -757,8 +765,9 @@ async def dashboard_full(
         "items": [item.model_dump(mode="json") for item in items],
         "totals": {
             "total_due": placement_due_total + joc_due_total,
-            "candidate_due": joc_due_total,
-            "company_due": placement_due_total,
+            "company_due": 0,
+            "placement_income_due": placement_due_total,
+            "joc_due": joc_due_total,
         },
     }
 
