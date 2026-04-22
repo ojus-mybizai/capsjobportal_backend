@@ -81,6 +81,7 @@ class CandidateUpdate(CandidateBase):
 
 class CandidateStatusChange(BaseModel):
     status: CandidateStatus
+    remarks: Optional[str] = None
     fee_structure: Optional["JocStructureFeeCreate"] = None
     initial_payment: Optional[CandidatePaymentCreate] = None
 

@@ -765,7 +765,6 @@ async def dashboard_full(
         "items": [item.model_dump(mode="json") for item in items],
         "totals": {
             "total_due": placement_due_total + joc_due_total,
-            "company_due": 0,
             "placement_income_due": placement_due_total,
             "joc_due": joc_due_total,
         },

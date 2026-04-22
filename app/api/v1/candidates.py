@@ -789,8 +789,15 @@ async def update_candidate_status(
     # Update status
     candidate.status = body.status.value
 
+    # Append status change remark to candidate notes
+    if body.remarks and body.remarks.strip():
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        remark_entry = f"[{timestamp}] → {body.status.value}: {body.remarks.strip()}"
+        candidate.notes = (candidate.notes + "\n" + remark_entry) if candidate.notes else remark_entry
+
     # Handle fee structure and payments based on status
-    if body.status in {CandidateStatus.FREE, CandidateStatus.CAPS}:
+    if body.status in {CandidateStatus.FREE, CandidateStatus.CAPS, CandidateStatus.NOT_INTERESTED}:
         if body.fee_structure is not None or body.initial_payment is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

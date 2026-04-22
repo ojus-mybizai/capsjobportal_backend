@@ -28,6 +28,7 @@ class CandidateStatus(str, enum.Enum):
     JOC = "JOC"
     CAPS = "CAPS"
     FREE = "FREE"
+    NOT_INTERESTED = "NOT_INTERESTED"
 
 
 class CandidateEmploymentStatus(str, enum.Enum):
