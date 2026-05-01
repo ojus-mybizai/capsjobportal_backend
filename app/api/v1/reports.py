@@ -631,27 +631,32 @@ async def dashboard_full(
     _apply_date_range(candidate_payment_filters, CandidatePayment.payment_date, start_date, end_date)
     placement_filters = [PlacementIncomePayment.is_active.is_(True)]
     _apply_date_range(placement_filters, PlacementIncomePayment.paid_date, start_date, end_date)
-    joc_fee_filters = [JocStructureFee.is_active.is_(True)]
-    _apply_date_range(joc_fee_filters, JocStructureFee.created_at, start_date, end_date)
 
     cp_subq = select(func.coalesce(func.sum(CompanyPayment.amount), 0))
     if company_payment_filters:
         cp_subq = cp_subq.where(*company_payment_filters)
-    cdp_subq = select(func.coalesce(func.sum(CandidatePayment.amount), 0)).where(
-        *candidate_payment_filters
-    )
     pip_subq = select(func.coalesce(func.sum(PlacementIncomePayment.amount), 0)).where(
         *placement_filters
     )
-    joc_subq = select(
-        func.coalesce(func.sum(JocStructureFee.total_fee - JocStructureFee.balance), 0)
-    ).where(*joc_fee_filters)
+    # Split candidate payments by status to match the payments ledger source classification
+    joc_payment_subq = (
+        select(func.coalesce(func.sum(CandidatePayment.amount), 0))
+        .select_from(CandidatePayment)
+        .join(Candidate, Candidate.id == CandidatePayment.candidate_id)
+        .where(*candidate_payment_filters, Candidate.status == CandidateStatus.JOC.value)
+    )
+    reg_payment_subq = (
+        select(func.coalesce(func.sum(CandidatePayment.amount), 0))
+        .select_from(CandidatePayment)
+        .join(Candidate, Candidate.id == CandidatePayment.candidate_id)
+        .where(*candidate_payment_filters, Candidate.status != CandidateStatus.JOC.value)
+    )
 
     finance_stmt = select(
         cp_subq.scalar_subquery().label("company_fee"),
-        cdp_subq.scalar_subquery().label("registration_fee"),
+        reg_payment_subq.scalar_subquery().label("registration_fee"),
         pip_subq.scalar_subquery().label("placement_income_fee"),
-        joc_subq.scalar_subquery().label("joc_fee"),
+        joc_payment_subq.scalar_subquery().label("joc_fee"),
     )
     finance_row = (await session.execute(finance_stmt)).one()
     company_fee = int(finance_row.company_fee or 0)
